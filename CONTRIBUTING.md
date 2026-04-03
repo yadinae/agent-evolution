@@ -1,23 +1,28 @@
-# 贡献指南
+# 贡献者指南 🤝
 
-感谢你对 Agent Evolution 项目的关注！我们欢迎各种形式的贡献。
-
-## 📋 目录
-
-- [行为准则](#-行为准则)
-- [我能贡献什么](#-我能贡献什么)
-- [开发环境设置](#-开发环境设置)
-- [提交流程](#-提交流程)
-- [代码规范](#-代码规范)
-- [测试要求](#-测试要求)
-- [文档规范](#-文档规范)
-- [发布流程](#-发布流程)
+欢迎为 Agent Evolution 项目做出贡献！本指南将帮助你快速上手。
 
 ---
 
-## 🤝 行为准则
+## 📖 目录
 
-本项目采用 [贡献者公约](https://www.contributor-covenant.org/) 行为准则。请确保：
+- [行为准则](#行为准则)
+- [如何贡献](#如何贡献)
+- [开发环境设置](#开发环境设置)
+- [提交流程](#提交流程)
+- [代码规范](#代码规范)
+- [测试要求](#测试要求)
+- [文档规范](#文档规范)
+- [发布流程](#发布流程)
+- [常见问题](#常见问题)
+
+---
+
+## 行为准则
+
+### 我们的承诺
+
+为了营造一个开放和友好的环境，我们承诺：
 
 - 使用友好和包容的语言
 - 尊重不同的观点和经验
@@ -25,337 +30,571 @@
 - 关注对社区最有利的事情
 - 对其他社区成员表示同理心
 
----
+### 不可接受的行为
 
-## 💡 我能贡献什么
-
-### 1. 报告 Bug
-
-发现 Bug？请创建 Issue 并包含：
-
-- 清晰的标题和描述
-- 复现步骤
-- 预期行为和实际行为
-- 环境信息（Python 版本、操作系统等）
-- 相关日志和截图
-
-### 2. 提出新功能
-
-有新想法？请创建 Issue 并说明：
-
-- 功能描述和使用场景
-- 为什么这个功能很重要
-- 可能的实现方案
-- 潜在的兼容性影响
-
-### 3. 提交代码
-
-可以直接提交 Pull Request：
-
-- 修复 Typo 或文档错误
-- 改进现有功能
-- 添加新特性
-- 优化性能
-- 增加测试覆盖率
-
-### 4. 改进文档
-
-文档同样重要：
-
-- 修正文档错误
-- 补充缺失的说明
-- 添加示例代码
-- 翻译文档
+- 使用性化的语言或图像
+- 人身攻击或侮辱性评论
+- 公开或私下骚扰
+- 未经许可发布他人信息
+- 其他不道德或不专业的行为
 
 ---
 
-## 🛠️ 开发环境设置
+## 如何贡献
 
-### 1. Fork 和克隆
+### 贡献方式
+
+你可以通过以下方式贡献：
+
+1. **报告 Bug** - 提交 Issue 描述问题
+2. **建议功能** - 提交 Issue 提出新功能建议
+3. **修复 Bug** - 提交 PR 修复已知问题
+4. **实现功能** - 提交 PR 实现新功能
+5. **改进文档** - 修正或补充文档
+6. **代码审查** - 审查他人的 PR
+7. **分享经验** - 撰写博客、教程
+
+### 找到合适的任务
+
+查看以下标签找到适合的任务：
+
+- `good first issue` - 适合新手
+- `help wanted` - 需要帮助
+- `bug` - Bug 修复
+- `enhancement` - 功能增强
+- `documentation` - 文档改进
+
+---
+
+## 开发环境设置
+
+### 1. Fork 仓库
+
+在 GitHub 上点击 "Fork" 按钮创建你的 Fork。
+
+### 2. 克隆仓库
 
 ```bash
-# Fork 项目
-# 在 GitHub 上点击 Fork 按钮
-
-# 克隆到本地
 git clone https://github.com/YOUR_USERNAME/agent-evolution.git
 cd agent-evolution
-
-# 添加上游仓库
-git remote add upstream https://github.com/yadadinae/agent-evolution.git
 ```
 
-### 2. 创建虚拟环境
+### 3. 添加上游仓库
 
 ```bash
-# 创建虚拟环境
+git remote add upstream https://github.com/yadinae/agent-evolution.git
+git fetch upstream
+```
+
+### 4. 创建虚拟环境
+
+```bash
+# Python 3.11+
 python -m venv venv
 
 # 激活虚拟环境
 source venv/bin/activate  # Linux/macOS
+# 或
 venv\Scripts\activate     # Windows
+```
 
+### 5. 安装依赖
+
+```bash
 # 安装开发依赖
 pip install -r requirements.txt
-pip install pytest pytest-cov black flake8 mypy
+
+# 安装开发工具
+pip install black flake8 mypy pytest pytest-cov
 ```
 
-### 3. 创建分支
+### 6. 验证安装
 
 ```bash
-# 从 develop 分支创建新分支
-git checkout develop
-git checkout -b feature/your-feature-name
-
-# 或者修复 Bug
-git checkout -b fix/bug-fix-name
-```
-
----
-
-## 📝 提交流程
-
-### 1. 开发流程
-
-```bash
-# 保持分支同步
-git fetch upstream
-git rebase upstream/develop
-
-# 开发功能
-# ... 编写代码和测试 ...
-
 # 运行测试
 pytest tests/ -v
-
-# 格式化代码
-black src/ tests/
 
 # 检查代码风格
 flake8 src/ tests/
 
-# 提交更改
-git add .
-git commit -m "feat: add new feature"
+# 运行类型检查
+mypy src/
+```
 
-# 推送到远程
+---
+
+## 提交流程
+
+### 1. 创建功能分支
+
+```bash
+# 保持 main 分支最新
+git checkout main
+git pull upstream main
+
+# 创建功能分支
+git checkout -b feature/your-feature-name
+```
+
+### 分支命名规范
+
+- `feature/xxx` - 新功能
+- `bugfix/xxx` - Bug 修复
+- `hotfix/xxx` - 紧急修复
+- `docs/xxx` - 文档更新
+- `refactor/xxx` - 代码重构
+- `test/xxx` - 测试添加
+- `chore/xxx` - 其他变更
+
+### 2. 进行更改
+
+进行修改并确保：
+
+- ✅ 代码遵循规范
+- ✅ 添加了测试
+- ✅ 所有测试通过
+- ✅ 文档已更新
+
+### 3. 提交更改
+
+```bash
+# 添加更改
+git add .
+
+# 提交 (使用 Conventional Commits)
+git commit -m "feat: add new feature"
+```
+
+### Commit Message 规范
+
+遵循 [Conventional Commits](https://www.conventionalcommits.org/)：
+
+```
+<type>(<scope>): <description>
+
+[optional body]
+
+[optional footer]
+```
+
+**Type 类型**:
+- `feat`: 新功能
+- `fix`: Bug 修复
+- `docs`: 文档更新
+- `style`: 代码格式 (不影响代码运行)
+- `refactor`: 重构 (既不是新功能也不是 Bug 修复)
+- `test`: 测试添加或修改
+- `chore`: 构建过程或辅助工具变动
+
+**示例**:
+```
+feat(task): add task performance analyzer
+
+- Implement TaskPerformanceAnalyzer class
+- Add 20 core metrics
+- Create unit tests
+
+Closes #123
+```
+
+### 4. 推送到分支
+
+```bash
 git push origin feature/your-feature-name
 ```
 
-### 2. 创建 Pull Request
+### 5. 创建 Pull Request
 
-1. 在 GitHub 上访问你的 Fork
+1. 访问你的 Fork 页面
 2. 点击 "Compare & pull request"
-3. 填写 PR 描述（使用模板）
-4. 等待 CI 检查通过
-5. 等待代码审查
-
-### 3. PR 模板
-
-```markdown
-## 描述
-简要描述此 PR 的目的
-
-## 相关 Issue
-Fixes #123
-
-## 变更类型
-- [ ] 新功能
-- [ ] Bug 修复
-- [ ] 文档更新
-- [ ] 性能优化
-- [ ] 重构
-- [ ] 测试
-
-## 测试
-- [ ] 已添加单元测试
-- [ ] 所有测试通过
-- [ ] 已手动测试
-
-## 截图（如适用）
-添加相关截图
-```
+3. 填写 PR 描述
+4. 选择标签
+5. 点击 "Create pull request"
 
 ---
 
-## 📏 代码规范
+## 代码规范
 
-### Python 代码风格
+### Python 代码规范
 
-遵循 [PEP 8](https://pep8.org/) 规范：
+遵循 [PEP 8](https://pep8.org/)：
 
 ```python
 # ✅ 好的代码
-def calculate_health_score(tasks, skills):
+def calculate_health_score(
+    success_rate: float,
+    avg_duration: float,
+    error_rate: float
+) -> float:
     """计算健康分数"""
-    if not tasks or not skills:
-        return 0
-    
-    task_score = sum(task['score'] for task in tasks) / len(tasks)
-    skill_score = sum(skill['score'] for skill in skills) / len(skills)
-    
-    return (task_score + skill_score) / 2
+    score = (
+        success_rate * 0.4 +
+        (1 - avg_duration / 100) * 0.3 +
+        (1 - error_rate) * 0.3
+    )
+    return min(100, max(0, score * 100))
 
-# ❌ 避免的代码
-def calc(t,s):return(t+s)/2
+# ❌ 不好的代码
+def calc(s,d,e):
+    score=s*0.4+(1-d/100)*0.3+(1-e)*0.3
+    return score
 ```
 
-### 命名规范
+### 类型注解
 
-- **类名**: PascalCase (`TaskPerformanceAnalyzer`)
-- **函数/方法**: snake_case (`analyze_all_tasks`)
-- **常量**: UPPER_CASE (`MAX_RECOMMENDATIONS`)
-- **私有方法**: 前缀下划线 (`_internal_method`)
+所有公共函数必须有类型注解：
+
+```python
+# ✅ 好的代码
+from typing import Dict, List, Optional
+
+def analyze_tasks(
+    task_ids: List[int],
+    filters: Optional[Dict[str, str]] = None
+) -> Dict[str, float]:
+    """分析任务"""
+    pass
+
+# ❌ 不好的代码
+def analyze_tasks(task_ids, filters=None):
+    pass
+```
 
 ### 文档字符串
 
-所有公共函数和类必须包含文档字符串：
+所有公共函数和类必须有文档字符串：
 
 ```python
-def generate_report(format='markdown'):
-    """
-    生成进化报告
+# ✅ 好的代码
+class TaskAnalyzer:
+    """任务分析器"""
     
-    Args:
-        format (str): 报告格式 ('markdown' 或 'json')
-    
-    Returns:
-        str: 格式化的报告内容
-    
-    Raises:
-        ValueError: 当 format 参数无效时
-    """
-    if format not in ['markdown', 'json']:
-        raise ValueError("Format must be 'markdown' or 'json'")
-    
-    # 实现代码
+    def analyze(self, task_id: int) -> Dict:
+        """
+        分析单个任务
+        
+        Args:
+            task_id: 任务 ID
+            
+        Returns:
+            分析结果字典
+            
+        Raises:
+            ValueError: 如果任务 ID 无效
+        """
+        pass
+
+# ❌ 不好的代码
+class TaskAnalyzer:
+    def analyze(self, task_id):
+        pass
 ```
 
----
+### 代码格式化
 
-## ✅ 测试要求
-
-### 1. 单元测试
-
-每个新功能必须包含单元测试：
-
-```python
-def test_health_score_calculation():
-    """测试健康分数计算"""
-    tasks = [{'score': 80}, {'score': 90}]
-    skills = [{'score': 85}]
-    
-    score = calculate_health_score(tasks, skills)
-    
-    assert score == 85.0
-```
-
-### 2. 测试覆盖率
-
-- 新功能覆盖率必须 >90%
-- 整体项目覆盖率保持 >85%
+使用 Black 格式化代码：
 
 ```bash
-# 运行测试并生成覆盖率报告
+# 安装 Black
+pip install black
+
+# 格式化代码
+black src/ tests/
+
+# 检查格式
+black --check src/ tests/
+```
+
+### 代码检查
+
+使用 flake8 检查代码风格：
+
+```bash
+# 安装 flake8
+pip install flake8
+
+# 检查代码
+flake8 src/ tests/
+
+# 忽略特定错误
+flake8 src/ --ignore=E501,W503
+```
+
+### 类型检查
+
+使用 mypy 进行类型检查：
+
+```bash
+# 安装 mypy
+pip install mypy
+
+# 类型检查
+mypy src/
+
+# 严格模式
+mypy src/ --strict
+```
+
+---
+
+## 测试要求
+
+### 测试框架
+
+使用 pytest 进行测试：
+
+```bash
+# 运行所有测试
+pytest tests/ -v
+
+# 运行特定测试
+pytest tests/test_task_analyzer.py -v
+
+# 运行带关键字的测试
+pytest -k "test_health" -v
+
+# 生成覆盖率报告
 pytest tests/ --cov=src --cov-report=html
 
-# 查看覆盖率报告
-open htmlcov/index.html
+# 查看覆盖率
+coverage report
 ```
 
-### 3. 测试命名
+### 测试编写规范
 
 ```python
-def test_<function>_<scenario>_<expected_result>():
-    """测试函数_场景_预期结果"""
-    pass
+# ✅ 好的测试
+import pytest
+from src.task_analyzer import TaskAnalyzer
 
-# 示例
-def test_analyze_tasks_empty_list_returns_zero():
-    pass
+class TestTaskAnalyzer:
+    """TaskAnalyzer 测试类"""
+    
+    def test_analyze_success(self, sample_task):
+        """测试成功分析任务"""
+        analyzer = TaskAnalyzer()
+        result = analyzer.analyze(sample_task['id'])
+        
+        assert result['status'] == 'success'
+        assert 'metrics' in result
+        assert result['metrics']['success_rate'] > 0
+    
+    def test_analyze_invalid_task(self):
+        """测试分析无效任务"""
+        analyzer = TaskAnalyzer()
+        
+        with pytest.raises(ValueError):
+            analyzer.analyze(-1)
 
-def test_calculate_score_negative_values_raises_error():
-    pass
+# ❌ 不好的测试
+def test1():
+    from src.task_analyzer import TaskAnalyzer
+    a = TaskAnalyzer()
+    r = a.analyze(1)
+    assert r['status'] == 'success'
 ```
+
+### 测试覆盖率要求
+
+- **新功能**: 必须添加测试
+- **覆盖率**: >90%
+- **关键模块**: >95%
+
+### 测试类型
+
+1. **单元测试**: 测试单个函数或类
+2. **集成测试**: 测试模块间交互
+3. **性能测试**: 测试性能指标
+4. **边界测试**: 测试边界条件
+5. **错误处理测试**: 测试异常情况
 
 ---
 
-## 📚 文档规范
+## 文档规范
 
-### README 更新
+### 文档类型
 
-新功能需要更新 README：
+1. **README.md**: 项目概述和快速开始
+2. **API.md**: API 参考文档
+3. **ARCHITECTURE.md**: 架构设计文档
+4. **CONTRIBUTING.md**: 贡献指南
+5. **CHANGELOG.md**: 变更日志
+6. **Tutorials/**: 教程文档
 
-- 在相应章节添加说明
-- 提供使用示例
-- 包含必要的配置说明
-
-### API 文档
-
-公共 API 需要完整文档：
+### Markdown 规范
 
 ```markdown
-## TaskPerformanceAnalyzer
+# ✅ 好的标题
 
-### analyze_all_tasks()
+使用清晰的标题层级
 
-分析所有任务的执行数据。
+## 二级标题
 
-**返回值**:
-- `dict`: 包含以下字段：
-  - `total_tasks` (int): 总任务数
-  - `success_rate` (float): 成功率
-  - `health_score` (int): 健康分数 (0-100)
+### 三级标题
 
-**示例**:
+#### 四级标题
+
+# ✅ 好的代码块
+
 ```python
-analyzer = TaskPerformanceAnalyzer()
-analysis = analyzer.analyze_all_tasks()
+def example():
+    """示例函数"""
+    pass
 ```
+
+# ✅ 好的列表
+
+- 列表项 1
+- 列表项 2
+  - 子项 2.1
+  - 子项 2.2
+
+# ✅ 好的表格
+
+| 列 1 | 列 2 | 列 3 |
+|------|------|------|
+| 值 1 | 值 2 | 值 3 |
+| 值 4 | 值 5 | 值 6 |
 ```
+
+### 文档更新要求
+
+以下情况必须更新文档：
+
+- ✅ 添加新功能
+- ✅ 修改 API
+- ✅ 变更配置
+- ✅ 修复 Bug (如果影响行为)
+- ✅ 性能优化 (如果改变使用方式)
 
 ---
 
-## 🚀 发布流程
+## 发布流程
 
-### 版本号规范
+### 版本命名
 
-遵循 [Semantic Versioning](https://semver.org/)：
+遵循 [语义化版本 2.0.0](https://semver.org/)：
 
-- **MAJOR**: 不兼容的 API 变更
-- **MINOR**: 向后兼容的新功能
+```
+主版本号。次版本号。修订号
+MAJOR.MINOR.PATCH
+```
+
+- **MAJOR**: 破坏性变更
+- **MINOR**: 向后兼容的功能新增
 - **PATCH**: 向后兼容的 Bug 修复
 
 ### 发布步骤
 
-1. 更新版本号 (`pyproject.toml`)
-2. 更新 CHANGELOG.md
-3. 创建 Release Tag
-4. 发布到 PyPI
-5. 发布 GitHub Release
+1. **更新版本号**
+   ```python
+   # src/__version__.py
+   __version__ = "1.0.0"
+   ```
+
+2. **更新 CHANGELOG.md**
+   ```markdown
+   ## [1.0.0] - 2026-04-03
+   
+   ### Added
+   - 新功能 1
+   - 新功能 2
+   
+   ### Changed
+   - 变更 1
+   
+   ### Fixed
+   - Bug 修复 1
+   ```
+
+3. **创建 Git 标签**
+   ```bash
+   git tag -a v1.0.0 -m "Release v1.0.0"
+   git push origin v1.0.0
+   ```
+
+4. **创建 GitHub Release**
+   - 访问 Releases 页面
+   - 创建新 Release
+   - 使用 Release Drafter 生成说明
+   - 发布
+
+5. **发布到 PyPI** (如果适用)
+   ```bash
+   # 安装构建工具
+   pip install build twine
+   
+   # 构建分发包
+   python -m build
+   
+   # 上传到 PyPI
+   twine upload dist/*
+   ```
 
 ---
 
-## 🎯 代码审查清单
+## 常见问题
 
-提交 PR 前请自查：
+### Q: 如何开始第一个贡献？
 
-- [ ] 代码通过所有测试
-- [ ] 代码格式化（black）
-- [ ] 代码风格检查通过（flake8）
-- [ ] 添加了必要的测试
-- [ ] 更新了文档
-- [ ] 没有无关的更改
-- [ ] 提交信息清晰规范
+A: 从 `good first issue` 标签的任务开始，这些任务相对简单，适合新手。
+
+### Q: 我的 PR 多久会被审查？
+
+A: 通常在 1-3 个工作日内会有回应。如果超过 3 天，可以在 PR 中 @ 维护者。
+
+### Q: 如何请求功能？
+
+A: 在 Issues 中创建 "Feature Request"，详细描述功能需求和使用场景。
+
+### Q: 如何报告 Bug？
+
+A: 在 Issues 中创建 "Bug Report"，提供详细的复现步骤、期望行为和实际行为。
+
+### Q: 我可以贡献文档吗？
+
+A: 当然可以！文档贡献同样重要，欢迎任何文档改进。
+
+### Q: 如何测试我的更改？
+
+A: 运行 `pytest tests/ -v` 确保所有测试通过，并手动测试功能。
+
+### Q: 代码风格检查失败怎么办？
+
+A: 使用 `black` 格式化代码，根据 `flake8` 输出修复问题。
+
+### Q: 如何添加测试？
+
+A: 在 `tests/` 目录创建测试文件，遵循现有测试的结构和命名规范。
+
+### Q: 我的 PR 被拒绝了怎么办？
+
+A: 不要灰心！查看拒绝原因，进行修改后重新提交，或与维护者讨论。
+
+### Q: 如何联系维护者？
+
+A: 可以通过 Issue、PR 评论或邮件联系维护者。
 
 ---
 
-## 📞 联系方式
+## 贡献者权益
 
-- **GitHub Issues**: https://github.com/yadadinae/agent-evolution/issues
-- **Email**: support@studyai.ltd
-- **讨论区**: https://github.com/yadadinae/agent-evolution/discussions
+- ✅ 在 README 中列出贡献者
+- ✅ 在发布说明中感谢贡献者
+- ✅ 获得社区认可
+- ✅ 提升技术能力
+- ✅ 建立个人品牌
 
 ---
 
-感谢你的贡献！🎉
+## 致谢
+
+感谢所有为 Agent Evolution 项目做出贡献的开发者们！
+
+你们的贡献让这个项目变得更好！🎉
+
+---
+
+*文档版本：1.0.0*  
+*创建时间：2026-04-03*  
+*最后更新：2026-04-03*
