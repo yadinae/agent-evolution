@@ -415,6 +415,14 @@ class AgentEvolutionAnalyzer:
             result = None
             has_anomaly = False
         
+        # 11. 清理 HEARTBEAT.md 历史记录（只保留最近 3 条）
+        try:
+            print("\n🧹 清理历史记录...")
+            self._cleanup_heartbeat_history()
+            print("✅ 历史记录已清理（保留最近 3 条）")
+        except Exception as e:
+            print(f"⚠️ 历史记录清理失败：{e}")
+        
         print("\n" + "=" * 60)
         print("✅ 进化流程完成!")
         print("=" * 60)
@@ -486,6 +494,55 @@ class AgentEvolutionAnalyzer:
             print(f"  检测到异常：错误数={error_count}, 严重错误={has_critical_error}, P0 纠正={has_p0_correction}, P0 改进={has_p0_improvement}")
         
         return has_anomaly
+    
+    def _cleanup_heartbeat_history(self, keep_count: int = 3):
+        """
+        清理 HEARTBEAT.md 中的历史执行记录，只保留最近 N 条
+        
+        Args:
+            keep_count: 保留的记录数量（默认 3 条）
+        """
+        heartbeat_file = WORKSPACE / "memory" / "HEARTBEAT.md"
+        if not heartbeat_file.exists():
+            return
+        
+        with open(heartbeat_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # 分割文件内容
+        parts = content.split('### 🧬 Agent 进化任务')
+        if len(parts) < 2:
+            return
+        
+        header = parts[0]
+        footer_parts = parts[1].split('### 🧠 MemTensor-X 任务')
+        
+        if len(footer_parts) < 2:
+            return
+        
+        evolution_section = footer_parts[0]
+        memtensor_section = footer_parts[1]
+        
+        # 提取所有执行记录
+        import re
+        records = re.findall(r'- \[x\] \*\*.*?(?=- \[x\] \*\*|### 🧠|$)', evolution_section, re.DOTALL)
+        
+        # 只保留最近 N 条
+        if len(records) > keep_count:
+            recent_records = records[:keep_count]
+            
+            # 重建文件内容
+            new_content = header
+            new_content += '### 🧬 Agent 进化任务\n\n'
+            new_content += ''.join(recent_records)
+            new_content += '\n### 🧠 MemTensor-X 任务'
+            new_content += memtensor_section
+            
+            # 写入文件
+            with open(heartbeat_file, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+            
+            print(f"  已清理 {len(records) - keep_count} 条历史记录，保留 {keep_count} 条")
 
 
 if __name__ == "__main__":
