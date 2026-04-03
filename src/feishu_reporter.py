@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""
+Feishu Reporter - 飞书主动报告机制 (修复版)
+修复 agent-evolution 的主动通知功能
+"""
+
+import os
+import json
+import requests
+from datetime import datetime
+from pathlib import Path
+from dotenv import load_dotenv
+
+# 加载 .env 文件
+env_path = Path(__file__).parent.parent.parent / '.env'
+load_dotenv(env_path)
+
+WORKSPACE = Path("/home/admin/.nanobot/workspace")
+CONFIG_FILE = WORKSPACE.parent / "config.json"
+
+class FeishuReporter:
+    """飞书报告器"""
+    
+    def __init__(self):
+        self.config = self._load_config()
+        self.tenant_access_token = None
+        
+        # 从 .env 读取配置（优先）
+        self.app_id = os.getenv('FEISHU_APP_ID')
+        self.app_secret = os.getenv('FEISHU_APP_SECRET')
+        self.channel_id = os.getenv('FEISHU_CHANNEL_ID', 'ou_608260b868adf690d70569214d83cfda')
+        
+        # 如果 .env 没有，从 config.json 读取
+        if not self.app_id or not self.app_secret:
+            feishu_config = self.config.get('channels', {}).get('feishu', {})
+            self.app_id = feishu_config.get('appId') or feishu_config.get('app_id')
+            self.app_secret = feishu_config.get('appSecret') or feishu_config.get('app_secret')
+        
+        if not self.channel_id:
+            feishu_config = self.config.get('channels', {}).get('feishu', {})
+            self.channel_id = feishu_config.get('channelId') or feishu_config.get('channel_id')
+        
+        self._load_config()
+        
+    def _load_config(self) -> dict:
+        """加载配置"""
+        if not CONFIG_FILE.exists():
+            return {}
+        
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    
+    def get_tenant_access_token(self) -> str:
+        """获取飞书 tenant_access_token"""
+        if self.tenant_access_token:
+            return self.tenant_access_token
+        
+        if not self.app_id or not self.app_secret:
+            raise ValueError("飞书 App ID 或 Secret 未配置（检查 .env 或 config.json）")
+        
+        url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+        payload = {
+            "app_id": self.app_id,
+            "app_secret": self.app_secret
+        }
+        
+        response = requests.post(url, json=payload, timeout=10)
+        result = response.json()
+        
+        if result.get('code') != 0:
+            raise Exception(f"获取 token 失败：{result.get('msg')}")
+        
+        self.tenant_access_token = result['tenant_access_token']
+        return self.tenant_access_token
+    
+    def send_evolution_report(self, report_path: str, channel_id: str = None):
+        """
+        发送进化报告到飞书
+        
+        Args:
+            report_path: 进化报告文件路径
+            channel_id: 飞书频道 ID（默认使用配置中的频道）
+        """
+        if not Path(report_path).exists():
+            raise FileNotFoundError(f"报告文件不存在：{report_path}")
+        
+        # 读取报告内容
+        with open(report_path, 'r', encoding='utf-8') as f:
+            report_content = f.read()
+        
+        # 确定目标频道
+        target_channel = channel_id or self.channel_id
+        
+        if not target_channel:
+            raise ValueError("飞书频道 ID 未配置")
+        
+        # 转换为飞书消息格式
+        message = self._markdown_to_feishu_message(report_content)
+        
+        # 发送消息
+        return self._send_text_message(target_channel, message)
+    
+    def _send_text_message(self, channel_id: str, message: str) -> dict:
+        """
+        发送文本消息到飞书
+        
+        Args:
+            channel_id: 接收者 ID
+            message: 消息内容
+        """
+        token = self.get_tenant_access_token()
+        # receive_id_type 必须放在 URL 查询参数中
+        url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
+        
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        
+        # 请求体中不需要 receive_id_type
+        payload = {
+            "receive_id": channel_id,
+            "msg_type": "text",
+            "content": json.dumps({"text": message}, ensure_ascii=False)
+        }
+        
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        result = response.json()
+        
+        if result.get('code') != 0:
+            error_msg = result.get('msg', '未知错误')
+            print(f"❌ API 响应：{json.dumps(result, ensure_ascii=False, indent=2)}")
+            raise Exception(f"发送消息失败：{error_msg}")
+        
+        message_id = result.get('data', {}).get('message_id')
+        print(f"✅ 飞书消息已发送：{message_id}")
+        
+        return {
+            "status": "success",
+            "message_id": message_id,
+            "channel_id": channel_id
+        }
+    
+    def _markdown_to_feishu_message(self, markdown: str) -> str:
+        """
+        将 Markdown 转换为飞书消息文本
+        
+        飞书支持部分 Markdown 语法：
+        - **加粗**
+        - *斜体*
+        - [链接](url)
+        - `行内代码`
+        - 引用块
+        """
+        # 简化处理：提取关键信息
+        lines = markdown.split('\n')
+        message_lines = []
+        
+        for line in lines[:50]:  # 限制长度
+            if line.startswith('# '):
+                message_lines.append(f"**{line[2:]}**")
+            elif line.startswith('## '):
+                message_lines.append(f"\n**{line[3:]}**")
+            elif line.startswith('- '):
+                message_lines.append(f"• {line[2:]}")
+            elif line.startswith('**'):
+                message_lines.append(line)
+            elif line.strip():
+                message_lines.append(line)
+        
+        # 添加摘要
+        summary = f"\n\n📊 Agent 进化报告已完成\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        
+        return '\n'.join(message_lines[:30]) + summary
+    
+    def send_notification(self, title: str, content: str, channel_id: str = None):
+        """
+        发送简单通知
+        
+        Args:
+            title: 通知标题
+            content: 通知内容
+            channel_id: 飞书频道 ID
+        """
+        target_channel = channel_id or self.channel_id
+        
+        if not target_channel:
+            raise ValueError("飞书频道 ID 未配置")
+        
+        message = f"**{title}**\n\n{content}"
+        
+        return self._send_text_message(target_channel, message)
+
+
+def main():
+    """测试飞书报告机制"""
+    reporter = FeishuReporter()
+    
+    # 测试发送通知
+    try:
+        result = reporter.send_notification(
+            title="🧬 Agent Evolution v2.0 测试",
+            content="WAL 协议、Working Buffer、飞书报告机制已整合完成，等待 Heartbeat 任务验证",
+            channel_id="ou_608260b868adf690d70569214d83cfda"
+        )
+        print(f"✅ 测试成功：{result}")
+    except Exception as e:
+        print(f"❌ 测试失败：{e}")
+
+
+if __name__ == "__main__":
+    main()
