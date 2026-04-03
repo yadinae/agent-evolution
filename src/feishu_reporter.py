@@ -6,6 +6,7 @@ Feishu Reporter - 飞书主动报告机制 (修复版)
 
 import os
 import json
+import re
 import requests
 from datetime import datetime
 from pathlib import Path
