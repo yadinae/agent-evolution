@@ -397,13 +397,23 @@ class AgentEvolutionAnalyzer:
             "report_path": str(REPORT_FILE)
         })
         
-        # 10. 飞书主动报告
+        # 10. 飞书主动报告（仅在异常或重要事件时发送）
         try:
-            print("\n📤 发送飞书报告...")
-            self.reporter.send_evolution_report(str(REPORT_FILE))
-            print("✅ 飞书报告已发送")
+            print("\n📤 检查是否需要发送飞书报告...")
+            # 检查报告中是否有异常或重要事件
+            has_anomaly = self.reporter.check_report_for_anomalies(str(REPORT_FILE))
+            
+            if has_anomaly:
+                print("  ⚠️  检测到异常 - 发送飞书通知")
+                result = self.reporter.send_evolution_report(str(REPORT_FILE), force_send=True)
+                print("✅ 飞书报告已发送")
+            else:
+                print("  ✅ 无异常 - 静默模式跳过通知")
+                result = self.reporter.send_evolution_report(str(REPORT_FILE), force_send=False)
         except Exception as e:
             print(f"⚠️ 飞书报告发送失败：{e}")
+            result = None
+            has_anomaly = False
         
         print("\n" + "=" * 60)
         print("✅ 进化流程完成!")
@@ -420,8 +430,62 @@ class AgentEvolutionAnalyzer:
             'improvements': len(self.improvements),
             'learnings': len(self.learnings),
             'optimizations': len(self.optimizations),
-            'report_path': str(REPORT_FILE)
+            'report_path': str(REPORT_FILE),
+            'has_anomaly': has_anomaly,
+            'notification_sent': has_anomaly
         }
+    
+    def _check_for_anomalies(self) -> bool:
+        """
+        检查是否有异常或重要事件需要发送通知
+        
+        Returns:
+            bool: True 表示有异常需要发送通知，False 表示无异常可以静默
+        """
+        # 检查错误数量是否超过阈值
+        error_threshold = 1000  # 错误数超过 1000 视为异常
+        
+        # 检查是否有严重错误模式
+        critical_patterns = [
+            r'严重错误|Critical|Fatal',
+            r'系统崩溃|System Crash',
+            r'数据丢失|Data Loss',
+            r'API 配额耗尽|Quota Exhausted',
+        ]
+        
+        # 检查是否有 P0 级别的用户纠正
+        p0_pattern = r'P0|优先级.*0|最高优先级'
+        
+        # 检查错误数量
+        error_count = sum(len(v) for v in self.errors.values()) if hasattr(self, 'errors') else 0
+        
+        # 检查是否有严重错误
+        has_critical_error = any(
+            re.search(pattern, self.history_content, re.IGNORECASE)
+            for pattern in critical_patterns
+        )
+        
+        # 检查是否有 P0 纠正
+        has_p0_correction = bool(re.search(p0_pattern, self.history_content, re.IGNORECASE))
+        
+        # 检查改进项中是否有 P0 优先级
+        has_p0_improvement = any(
+            imp.get('priority') == 'P0' or imp.get('severity') == 'critical'
+            for imp in self.improvements
+        )
+        
+        # 综合判断
+        has_anomaly = (
+            error_count > error_threshold or
+            has_critical_error or
+            has_p0_correction or
+            has_p0_improvement
+        )
+        
+        if has_anomaly:
+            print(f"  检测到异常：错误数={error_count}, 严重错误={has_critical_error}, P0 纠正={has_p0_correction}, P0 改进={has_p0_improvement}")
+        
+        return has_anomaly
 
 
 if __name__ == "__main__":
