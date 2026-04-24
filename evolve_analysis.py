@@ -14,6 +14,7 @@ import os
 import sys
 import json
 import re
+import argparse
 from datetime import datetime, timedelta
 from pathlib import Path
 from collections import Counter, defaultdict
@@ -644,7 +645,16 @@ class AgentEvolutionAnalyzer:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Agent Evolution Analysis')
+    parser.add_argument('--analyze', action='store_true', help='分析会话历史（运行完整进化流程）')
+    parser.add_argument('--daily-review', action='store_true', help='每日审查（运行完整进化流程）')
+    parser.add_argument('--weekly-summary', action='store_true', help='每周总结（运行完整进化流程）')
+    
+    args = parser.parse_args()
+    
     analyzer = AgentEvolutionAnalyzer()
+    
+    # 所有模式都运行完整进化流程
     result = analyzer.run()
     
     # 输出 JSON 结果供后续处理
