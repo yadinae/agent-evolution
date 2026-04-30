@@ -56,6 +56,10 @@ class AgentEvolutionAnalyzer:
         self.task_analyzer = TaskPerformanceAnalyzer()
         self.skill_analyzer = SkillQualityAnalyzer()
         
+        # 阶段 3：闭环进化
+        self.feedback_log = EVOLUTION_DIR / "feedback-log.json"
+        self.verification_results = {}
+        
     def load_data(self):
         """加载历史数据"""
         print("📚 加载历史数据...")
@@ -444,6 +448,217 @@ class AgentEvolutionAnalyzer:
         except Exception as e:
             print(f"  ❌ 技能质量分析失败：{e}")
     
+    def _assign_priorities(self, improvements: list) -> list:
+        """阶段 3：为改进项分配优先级 P0/P1/P2/P3"""
+        print("\n🎯 分配改进优先级...")
+        
+        for imp in improvements:
+            imp_type = imp.get('type', '')
+            severity = imp.get('severity', 'medium')
+            
+            # P0：阻塞性问题（成功率<80%、安全漏洞、数据丢失）
+            if imp_type in ('task_performance',) and severity == 'high':
+                health_score = imp.get('health_score', 100)
+                if health_score < 60:
+                    imp['priority'] = 'P0'
+                else:
+                    imp['priority'] = 'P1'
+            elif imp_type == 'error_handling' and severity == 'high':
+                imp['priority'] = 'P0'
+            elif imp_type == 'skill_quality' and severity == 'high':
+                imp['priority'] = 'P1'
+            elif imp_type in ('workflow_optimization', 'api_reliability'):
+                imp['priority'] = 'P1' if severity == 'high' else 'P2'
+            elif imp_type == 'skill_documentation':
+                imp['priority'] = 'P2'
+            else:
+                imp['priority'] = 'P3'
+            
+            print(f"  [{imp['priority']}] {imp_type}: {imp.get('description', imp.get('title', 'N/A'))[:50]}")
+        
+        # 按优先级排序
+        priority_order = {'P0': 0, 'P1': 1, 'P2': 2, 'P3': 3}
+        improvements.sort(key=lambda x: priority_order.get(x.get('priority', 'P3'), 3))
+        
+        return improvements
+    
+    def _verify_improvements(self, plan: dict) -> dict:
+        """阶段 3：验证上次改进效果"""
+        print("\n✅ 验证改进效果...")
+        
+        verification = {
+            'verified': [],
+            'pending': [],
+            'failed': [],
+            'details': {}
+        }
+        
+        # 加载历史反馈
+        history = self._load_feedback_history()
+        
+        if not history:
+            print("  ℹ️ 无历史改进记录，跳过验证")
+            return verification
+        
+        # 检查上次周期的改进项
+        last_cycle = history.get('last_cycle', 0)
+        current_cycle = plan.get('cycle', 0)
+        
+        if last_cycle >= current_cycle:
+            print(f"  ℹ️ 周期 {last_cycle} 已验证，跳过")
+            return verification
+        
+        last_improvements = history.get('last_improvements', [])
+        
+        for imp in last_improvements:
+            imp_id = imp.get('id', '')
+            imp_type = imp.get('type', '')
+            applied = imp.get('applied', False)
+            
+            if not applied:
+                verification['pending'].append(imp_id)
+                continue
+            
+            # 验证逻辑：根据改进类型检查是否生效
+            status = self._verify_single_improvement(imp)
+            
+            if status == 'effective':
+                verification['verified'].append(imp_id)
+                verification['details'][imp_id] = {
+                    'status': 'effective',
+                    'message': '改进已生效'
+                }
+            elif status == 'partial':
+                verification['pending'].append(imp_id)
+                verification['details'][imp_id] = {
+                    'status': 'partial',
+                    'message': '改进部分生效，需持续关注'
+                }
+            else:
+                verification['failed'].append(imp_id)
+                verification['details'][imp_id] = {
+                    'status': 'failed',
+                    'message': '改进未生效，需重新评估'
+                }
+        
+        print(f"  验证结果：✅ {len(verification['verified'])} 个有效, "
+              f"⏳ {len(verification['pending'])} 个待观察, "
+              f"❌ {len(verification['failed'])} 个失败")
+        
+        self.verification_results = verification
+        return verification
+    
+    def _verify_single_improvement(self, imp: dict) -> str:
+        """验证单个改进是否生效"""
+        imp_type = imp.get('type', '')
+        
+        if imp_type == 'skill_documentation':
+            # 验证技能文档是否已创建
+            skills = imp.get('skills', [])
+            for skill_path in skills:
+                if '/' in skill_path:
+                    cat, name = skill_path.split('/', 1)
+                    skill_md = Path(f"/home/admin/.hermes/skills/{cat}/{name}/SKILL.md")
+                    if skill_md.exists():
+                        return 'effective'
+            return 'failed'
+        
+        elif imp_type == 'error_handling':
+            # 验证错误频次是否下降
+            category = imp.get('category', '')
+            current_count = self.history_content.count(category) if category else 0
+            last_count = imp.get('last_count', 0)
+            if last_count > 0 and current_count < last_count * 0.8:
+                return 'effective'
+            elif last_count > 0 and current_count < last_count:
+                return 'partial'
+            return 'pending'
+        
+        elif imp_type == 'task_performance':
+            # 验证任务健康评分是否提升
+            task_name = imp.get('task', '')
+            last_score = imp.get('last_health_score', 0)
+            # 简化：如果任务名出现在当前改进中，说明问题仍在
+            current_issues = [i for i in self.improvements if i.get('task') == task_name]
+            if not current_issues:
+                return 'effective'
+            elif last_score > 0:
+                return 'partial'
+            return 'pending'
+        
+        elif imp_type == 'skill_quality':
+            # 验证技能缺口是否已填补
+            skills = imp.get('skills', [])
+            if skills:
+                # 检查技能是否已创建或改进
+                return 'pending'  # 需要人工验证
+            return 'pending'
+        
+        return 'pending'
+    
+    def _record_feedback(self, plan: dict, applied: list, verification: dict):
+        """阶段 3：记录反馈循环"""
+        print("\n📝 记录反馈循环...")
+        
+        # 加载现有反馈
+        feedback = self._load_feedback_history()
+        if not feedback:
+            feedback = {
+                'cycles': [],
+                'last_cycle': 0,
+                'last_improvements': []
+            }
+        
+        # 记录当前周期
+        cycle_record = {
+            'cycle': plan.get('cycle', 0),
+            'timestamp': datetime.now().isoformat(),
+            'improvements_count': len(plan.get('improvements', [])),
+            'applied_count': len(applied),
+            'verification': {
+                'verified': len(verification.get('verified', [])),
+                'pending': len(verification.get('pending', [])),
+                'failed': len(verification.get('failed', []))
+            },
+            'applied_improvements': applied,
+            'verification_details': verification.get('details', {})
+        }
+        
+        feedback['cycles'].append(cycle_record)
+        feedback['last_cycle'] = plan.get('cycle', 0)
+        feedback['last_improvements'] = [
+            {
+                'id': f"{imp.get('type', '')}-{imp.get('task', imp.get('category', imp.get('title', '')))}",
+                'type': imp.get('type', ''),
+                'applied': imp.get('type', '') in [a.get('type', '') for a in applied],
+                'priority': imp.get('priority', 'P3')
+            }
+            for imp in plan.get('improvements', [])
+        ]
+        
+        # 只保留最近 10 个周期
+        if len(feedback['cycles']) > 10:
+            feedback['cycles'] = feedback['cycles'][-10:]
+        
+        # 保存反馈
+        with open(self.feedback_log, 'w', encoding='utf-8') as f:
+            json.dump(feedback, f, ensure_ascii=False, indent=2)
+        
+        print(f"  ✅ 反馈已保存：{self.feedback_log}")
+        print(f"  周期 {cycle_record['cycle']}: "
+              f"应用 {len(applied)}/{len(plan.get('improvements', []))} 个改进, "
+              f"验证 {len(verification.get('verified', []))} 个有效")
+    
+    def _load_feedback_history(self) -> dict:
+        """加载历史反馈记录"""
+        if self.feedback_log.exists():
+            try:
+                with open(self.feedback_log, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"  ⚠️ 加载反馈历史失败：{e}")
+        return None
+    
     def generate_evolution_plan(self):
         """生成进化计划"""
         print("\n📋 生成进化计划...")
@@ -483,7 +698,7 @@ class AgentEvolutionAnalyzer:
         
         return cycle
     
-    def generate_report(self, plan, trend=None):
+    def generate_report(self, plan, trend=None, verification=None):
         """生成进化报告"""
         print("\n📄 生成进化报告...")
         
@@ -633,6 +848,42 @@ class AgentEvolutionAnalyzer:
 
 ---
 
+"""
+        # 阶段 3：改进效果验证
+        if verification:
+            report += f"""## ✅ 改进效果验证
+
+| 状态 | 数量 |
+|------|------|
+| ✅ 已验证有效 | {len(verification.get('verified', []))} |
+| ⏳ 待观察 | {len(verification.get('pending', []))} |
+| ❌ 未生效 | {len(verification.get('failed', []))} |
+
+"""
+            if verification.get('details'):
+                report += "### 验证详情\n\n"
+                for imp_id, detail in verification['details'].items():
+                    status_emoji = {'effective': '✅', 'partial': '⏳', 'failed': '❌'}.get(detail['status'], '❓')
+                    report += f"- {status_emoji} **{imp_id}**: {detail['message']}\n"
+                report += "\n"
+        
+        # 阶段 3：反馈循环摘要
+        feedback = self._load_feedback_history()
+        if feedback and feedback.get('cycles'):
+            report += f"""## 📝 反馈循环摘要
+
+**记录周期数**: {len(feedback['cycles'])}
+
+| 周期 | 改进数 | 应用数 | 验证有效 | 待观察 | 失败 |
+|------|--------|--------|----------|--------|------|
+"""
+            for cycle in feedback['cycles'][-5:]:  # 最近 5 个周期
+                v = cycle.get('verification', {})
+                report += f"| #{cycle['cycle']} | {cycle['improvements_count']} | {cycle['applied_count']} | {v.get('verified', 0)} | {v.get('pending', 0)} | {v.get('failed', 0)} |\n"
+            report += "\n"
+        
+        report += f"""---
+
 ## 📁 输出文件
 
 - 进化计划：`memory/evolution/evolution-plan-{datetime.now().strftime('%Y-%m-%d')}.json`
@@ -705,8 +956,17 @@ class AgentEvolutionAnalyzer:
         # 7.6. 自动应用安全改进
         applied = self._apply_safe_improvements(plan)
         
-        # 8. 生成进化报告（含趋势对比）
-        report = self.generate_report(plan, trend)
+        # 阶段 3：优先级排序
+        plan['improvements'] = self._assign_priorities(plan.get('improvements', []))
+        
+        # 阶段 3：验证改进效果
+        verification = self._verify_improvements(plan)
+        
+        # 阶段 3：记录反馈循环
+        self._record_feedback(plan, applied, verification)
+        
+        # 8. 生成进化报告
+        report = self.generate_report(plan, trend, verification)
         
         # 9. 更新会话状态：完成
         self.wal.update_session_state({
