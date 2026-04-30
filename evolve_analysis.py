@@ -31,6 +31,8 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 from wal_protocol import WALProtocol
 from working_buffer import WorkingBuffer
 from feishu_reporter import FeishuReporter
+from task_analyzer import TaskPerformanceAnalyzer
+from skill_analyzer import SkillQualityAnalyzer
 
 # 确保输出目录存在
 EVOLUTION_DIR.mkdir(parents=True, exist_ok=True)
@@ -49,6 +51,10 @@ class AgentEvolutionAnalyzer:
         self.wal = WALProtocol()
         self.working_buffer = WorkingBuffer()
         self.reporter = FeishuReporter()
+        
+        # 阶段 2：增强分析能力
+        self.task_analyzer = TaskPerformanceAnalyzer()
+        self.skill_analyzer = SkillQualityAnalyzer()
         
     def load_data(self):
         """加载历史数据"""
@@ -319,6 +325,125 @@ class AgentEvolutionAnalyzer:
                 })
                 print(f"  ⚠️ {api}: {issue_count} 次相关问题")
     
+    def analyze_task_performance(self):
+        """阶段 2：任务性能分析"""
+        print("\n📊 分析任务性能...")
+        
+        try:
+            task_analysis = self.task_analyzer.analyze_all_tasks()
+            
+            if 'error' in task_analysis:
+                print(f"  ⚠️ {task_analysis['error']}")
+                return
+            
+            # 提取整体健康评分
+            overall = task_analysis.get('overall', {})
+            print(f"  整体健康评分：{overall.get('health_score', 'N/A')}")
+            print(f"  总任务数：{overall.get('total_tasks', 0)}")
+            print(f"  平均成功率：{overall.get('avg_success_rate', 0)*100:.1f}%")
+            
+            # 提取问题任务
+            tasks = task_analysis.get('tasks', {})
+            problematic_tasks = []
+            for task_name, task_data in tasks.items():
+                health_score = task_data.get('health_score', 100)
+                if health_score < 80:
+                    problematic_tasks.append({
+                        'name': task_name,
+                        'health_score': health_score,
+                        'success_rate': task_data.get('success_rate', 0),
+                        'issues': task_data.get('issues', [])
+                    })
+            
+            if problematic_tasks:
+                print(f"  ⚠️ 发现 {len(problematic_tasks)} 个健康问题任务")
+                for task in problematic_tasks:
+                    print(f"    - {task['name']}: 健康评分 {task['health_score']}, 成功率 {task['success_rate']*100:.1f}%")
+                    
+                    # 添加到改进项
+                    for issue in task.get('issues', []):
+                        self.improvements.append({
+                            'type': 'task_performance',
+                            'task': task['name'],
+                            'severity': issue.get('severity', 'medium'),
+                            'description': issue.get('description', ''),
+                            'suggestion': issue.get('suggestion', ''),
+                            'health_score': task['health_score']
+                        })
+            
+            # 提取优化建议
+            recommendations = task_analysis.get('recommendations', [])
+            for rec in recommendations[:5]:  # 只取前 5 个
+                self.optimizations.append({
+                    'type': 'task_optimization',
+                    'target': rec.get('task', 'N/A'),
+                    'suggestion': rec.get('suggestion', ''),
+                    'priority': rec.get('priority', 'P2')
+                })
+            
+            print(f"  ✅ 任务性能分析完成")
+            
+        except Exception as e:
+            print(f"  ❌ 任务性能分析失败：{e}")
+    
+    def analyze_skill_quality(self):
+        """阶段 2：技能质量分析"""
+        print("\n🛠️ 分析技能质量...")
+        
+        try:
+            skill_analysis = self.skill_analyzer.analyze_skill_library()
+            
+            if 'error' in skill_analysis:
+                print(f"  ⚠️ {skill_analysis['error']}")
+                return
+            
+            # 提取摘要
+            summary = skill_analysis.get('summary', {})
+            print(f"  评估日期：{summary.get('evaluation_date', 'N/A')}")
+            print(f"  平均质量评分：{summary.get('avg_quality_score', 'N/A')}")
+            
+            # 提取健康分析
+            health = skill_analysis.get('health_analysis', {})
+            print(f"  技能总数：{health.get('total_skills', 0)}")
+            print(f"  平均分数：{health.get('average_score', 0):.1f}")
+            
+            # 等级分布
+            grade_dist = health.get('grade_distribution', {})
+            print(f"  等级分布：A={grade_dist.get('A', 0)}, B={grade_dist.get('B', 0)}, C={grade_dist.get('C', 0)}, D={grade_dist.get('D', 0)}")
+            
+            # 提取技能缺口
+            gaps = skill_analysis.get('skill_gaps', [])
+            if gaps:
+                print(f"  ⚠️ 发现 {len(gaps)} 个技能缺口")
+                for gap in gaps:
+                    print(f"    - {gap.get('title', 'N/A')}: {gap.get('description', '')}")
+                    
+                    # 添加到改进项
+                    self.improvements.append({
+                        'type': 'skill_quality',
+                        'gap_type': gap.get('type', 'unknown'),
+                        'severity': gap.get('severity', 'medium'),
+                        'title': gap.get('title', ''),
+                        'description': gap.get('description', ''),
+                        'suggestion': gap.get('recommendation', ''),
+                        'skills': gap.get('skills', [])
+                    })
+            
+            # 提取优化建议
+            recommendations = skill_analysis.get('recommendations', [])
+            for rec in recommendations[:5]:  # 只取前 5 个
+                self.optimizations.append({
+                    'type': 'skill_optimization',
+                    'target': rec.get('skill', 'N/A'),
+                    'suggestion': rec.get('suggestion', ''),
+                    'priority': rec.get('priority', 'P2')
+                })
+            
+            print(f"  ✅ 技能质量分析完成")
+            
+        except Exception as e:
+            print(f"  ❌ 技能质量分析失败：{e}")
+    
     def generate_evolution_plan(self):
         """生成进化计划"""
         print("\n📋 生成进化计划...")
@@ -414,6 +539,50 @@ class AgentEvolutionAnalyzer:
 """
             if 'frequency' in opt:
                 report += f"- **频次**: {opt['frequency']}\n"
+        
+        # 阶段 2：任务性能分析结果
+        report += f"""
+### 📊 任务性能分析
+
+"""
+        # 从 improvements 中提取任务性能相关项
+        task_improvements = [i for i in self.improvements if i.get('type') == 'task_performance']
+        task_optimizations = [o for o in self.optimizations if o.get('type') == 'task_optimization']
+        
+        if task_improvements:
+            report += f"**问题任务**: {len(task_improvements)} 个\n\n"
+            for imp in task_improvements[:5]:
+                report += f"- **{imp.get('task', 'N/A')}**: {imp.get('description', '')}\n"
+                report += f"  - 建议：{imp.get('suggestion', '')}\n"
+        else:
+            report += "✅ 所有任务运行正常\n"
+        
+        if task_optimizations:
+            report += f"\n**优化建议**: {len(task_optimizations)} 个\n\n"
+            for opt in task_optimizations[:3]:
+                report += f"- **{opt.get('target', 'N/A')}**: {opt.get('suggestion', '')}\n"
+        
+        # 阶段 2：技能质量分析结果
+        report += f"""
+### 🛠️ 技能质量分析
+
+"""
+        # 从 improvements 中提取技能质量相关项
+        skill_improvements = [i for i in self.improvements if i.get('type') == 'skill_quality']
+        skill_optimizations = [o for o in self.optimizations if o.get('type') == 'skill_optimization']
+        
+        if skill_improvements:
+            report += f"**技能缺口**: {len(skill_improvements)} 个\n\n"
+            for imp in skill_improvements[:5]:
+                report += f"- **{imp.get('title', 'N/A')}**: {imp.get('description', '')}\n"
+                report += f"  - 建议：{imp.get('suggestion', '')}\n"
+        else:
+            report += "✅ 技能库健康状况良好\n"
+        
+        if skill_optimizations:
+            report += f"\n**优化建议**: {len(skill_optimizations)} 个\n\n"
+            for opt in skill_optimizations[:3]:
+                report += f"- **{opt.get('target', 'N/A')}**: {opt.get('suggestion', '')}\n"
         
         report += f"""
 ---
@@ -520,6 +689,12 @@ class AgentEvolutionAnalyzer:
         
         # 6. 分析 API 健康状态
         self.analyze_api_health()
+        
+        # 6.5. 阶段 2：任务性能分析
+        self.analyze_task_performance()
+        
+        # 6.6. 阶段 2：技能质量分析
+        self.analyze_skill_quality()
         
         # 7. 生成进化计划
         plan = self.generate_evolution_plan()
