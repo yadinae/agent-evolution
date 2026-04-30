@@ -659,6 +659,503 @@ class AgentEvolutionAnalyzer:
                 print(f"  ⚠️ 加载反馈历史失败：{e}")
         return None
     
+    # ============================================
+    # 阶段 4：主动进化
+    # ============================================
+    
+    def _detect_proactive_issues(self, plan: dict) -> list:
+        """主动发现问题 - 分析多周期趋势，提前发现潜在问题"""
+        print("\n🔮 主动问题检测...")
+        
+        proactive_issues = []
+        feedback = self._load_feedback_history()
+        
+        if not feedback or len(feedback.get('cycles', [])) < 2:
+            print("  ℹ️ 历史周期不足，跳过主动检测")
+            return proactive_issues
+        
+        cycles = feedback['cycles']
+        
+        # 1. 检测持续存在的问题（连续 3 个周期以上）
+        persistent_issues = self._analyze_persistent_issues(cycles, plan)
+        proactive_issues.extend(persistent_issues)
+        
+        # 2. 检测恶化的问题（频次上升）
+        worsening_issues = self._analyze_worsening_issues(cycles)
+        proactive_issues.extend(worsening_issues)
+        
+        # 3. 检测新出现的模式
+        emerging_patterns = self._analyze_emerging_patterns()
+        proactive_issues.extend(emerging_patterns)
+        
+        # 4. 检测改进停滞
+        stagnation = self._analyze_stagnation(cycles)
+        proactive_issues.extend(stagnation)
+        
+        if proactive_issues:
+            print(f"  ⚠️ 发现 {len(proactive_issues)} 个潜在问题")
+            for issue in proactive_issues:
+                print(f"    [{issue.get('severity', 'medium')}] {issue.get('title', '')}")
+        else:
+            print("  ✅ 未发现潜在问题")
+        
+        return proactive_issues
+    
+    def _analyze_persistent_issues(self, cycles: list, plan: dict) -> list:
+        """分析连续存在的问题"""
+        issues = []
+        
+        # 统计每个问题类型出现的周期数
+        issue_frequency = {}
+        for cycle in cycles:
+            for imp in cycle.get('applied_improvements', []):
+                imp_type = imp.get('type', '')
+                if imp_type not in issue_frequency:
+                    issue_frequency[imp_type] = 0
+                issue_frequency[imp_type] += 1
+        
+        # 当前周期的改进项
+        current_types = set(i.get('type', '') for i in plan.get('improvements', []))
+        
+        # 检测连续出现的问题
+        for imp_type in current_types:
+            count = issue_frequency.get(imp_type, 0)
+            if count >= 2:
+                issues.append({
+                    'type': 'persistent_issue',
+                    'severity': 'high' if count >= 3 else 'medium',
+                    'title': f'持续问题：{imp_type}',
+                    'description': f'该问题已持续 {count + 1} 个周期，需要根本性解决方案',
+                    'cycle_count': count + 1,
+                    'suggestion': f'重新评估 {imp_type} 的处理策略，考虑架构级改进'
+                })
+        
+        return issues
+    
+    def _analyze_worsening_issues(self, cycles: list) -> list:
+        """分析恶化的问题"""
+        issues = []
+        
+        if len(cycles) < 2:
+            return issues
+        
+        last_cycle = cycles[-1]
+        prev_cycle = cycles[-2]
+        
+        last_count = last_cycle.get('improvements_count', 0)
+        prev_count = prev_cycle.get('improvements_count', 0)
+        
+        if last_count > prev_count * 1.5:
+            issues.append({
+                'type': 'worsening_trend',
+                'severity': 'high',
+                'title': '问题数量上升趋势',
+                'description': f'改进项从 {prev_count} 增加到 {last_count}，问题可能在恶化',
+                'suggestion': '分析新增问题的根本原因，加强预防措施'
+            })
+        
+        last_verification = last_cycle.get('verification', {})
+        total_verified = sum(last_verification.values()) if last_verification else 0
+        failed = last_verification.get('failed', 0)
+        
+        if total_verified > 0 and failed / total_verified > 0.3:
+            issues.append({
+                'type': 'high_failure_rate',
+                'severity': 'high',
+                'title': '改进失败率过高',
+                'description': f'验证失败率 {failed/total_verified*100:.0f}%，改进策略可能需要调整',
+                'suggestion': '审查改进方法的有效性，调整实施策略'
+            })
+        
+        return issues
+    
+    def _analyze_emerging_patterns(self) -> list:
+        """分析新出现的模式"""
+        issues = []
+        
+        new_error_patterns = [
+            (r'内存|memory|OOM', '内存问题'),
+            (r'超时|timeout|timed out', '超时问题'),
+            (r'配额|quota|limit', '配额限制'),
+        ]
+        
+        for pattern, name in new_error_patterns:
+            matches = re.findall(pattern, self.history_content, re.IGNORECASE)
+            if len(matches) >= 5:
+                issues.append({
+                    'type': 'emerging_pattern',
+                    'severity': 'medium',
+                    'title': f'新出现模式：{name}',
+                    'description': f'检测到 {len(matches)} 次 {name} 相关记录',
+                    'suggestion': f'为 {name} 添加专门的监控和处理机制'
+                })
+        
+        return issues
+    
+    def _analyze_stagnation(self, cycles: list) -> list:
+        """检测改进停滞"""
+        issues = []
+        
+        if len(cycles) < 3:
+            return issues
+        
+        recent = cycles[-3:]
+        applied_counts = [c.get('applied_count', 0) for c in recent]
+        
+        if all(c == 0 for c in applied_counts):
+            issues.append({
+                'type': 'stagnation',
+                'severity': 'medium',
+                'title': '改进应用停滞',
+                'description': '最近 3 个周期未应用任何改进',
+                'suggestion': '检查自动应用逻辑，或手动审查改进项'
+            })
+        
+        return issues
+    
+    def _generate_proactive_suggestions(self, plan: dict, proactive_issues: list) -> list:
+        """基于趋势生成自动优化建议"""
+        print("\n💡 生成主动优化建议...")
+        
+        suggestions = []
+        feedback = self._load_feedback_history()
+        
+        if not feedback:
+            return suggestions
+        
+        cycles = feedback.get('cycles', [])
+        
+        success_patterns = self._analyze_success_patterns(cycles)
+        suggestions.extend(success_patterns)
+        
+        trend_suggestions = self._analyze_trend_suggestions(cycles, proactive_issues)
+        suggestions.extend(trend_suggestions)
+        
+        skill_suggestions = self._generate_skill_suggestions()
+        suggestions.extend(skill_suggestions)
+        
+        if suggestions:
+            print(f"  生成 {len(suggestions)} 个主动建议")
+            for s in suggestions[:3]:
+                print(f"    - {s.get('title', '')}")
+        
+        return suggestions
+    
+    def _analyze_success_patterns(self, cycles: list) -> list:
+        """分析历史成功模式"""
+        suggestions = []
+        
+        effective_types = {}
+        for cycle in cycles:
+            for imp_id, detail in cycle.get('verification_details', {}).items():
+                if detail.get('status') == 'effective':
+                    imp_type = imp_id.split('-')[0] if '-' in imp_id else imp_id
+                    effective_types[imp_type] = effective_types.get(imp_type, 0) + 1
+        
+        for imp_type, count in sorted(effective_types.items(), key=lambda x: -x[1])[:3]:
+            if count >= 2:
+                suggestions.append({
+                    'type': 'success_pattern',
+                    'title': f'推广有效模式：{imp_type}',
+                    'description': f'该类型改进已验证有效 {count} 次',
+                    'suggestion': f'将 {imp_type} 的处理模式标准化，应用到类似场景'
+                })
+        
+        return suggestions
+    
+    def _analyze_trend_suggestions(self, cycles: list, proactive_issues: list) -> list:
+        """基于问题趋势生成建议"""
+        suggestions = []
+        
+        persistent = [i for i in proactive_issues if i.get('type') == 'persistent_issue']
+        if persistent:
+            suggestions.append({
+                'type': 'architecture_improvement',
+                'title': '架构级改进建议',
+                'description': f'{len(persistent)} 个问题持续存在，需要根本性解决方案',
+                'suggestion': '重新设计相关模块的架构，消除问题根源'
+            })
+        
+        return suggestions
+    
+    def _generate_skill_suggestions(self) -> list:
+        """基于技能使用情况生成建议"""
+        suggestions = []
+        
+        skill_calls = re.findall(r'skill_view\(name=[\'"]([^\'"]+)[\'"]', self.history_content)
+        if skill_calls:
+            from collections import Counter
+            skill_freq = Counter(skill_calls)
+            
+            for skill_name, count in skill_freq.most_common(3):
+                if count >= 5:
+                    suggestions.append({
+                        'type': 'skill_optimization',
+                        'title': f'优化高频技能：{skill_name}',
+                        'description': f'该技能被调用 {count} 次，优化收益高',
+                        'suggestion': f'审查并优化 {skill_name} 的实现，提升效率和可靠性'
+                    })
+        
+        return suggestions
+    
+    def _evolve_skills(self, plan: dict, proactive_issues: list) -> list:
+        """技能进化 - 自动创建/优化技能"""
+        print("\n🧬 技能进化...")
+        
+        evolved = []
+        
+        workflow_skills = self._create_workflow_skills()
+        evolved.extend(workflow_skills)
+        
+        problem_solving_skills = self._create_problem_solving_skills(proactive_issues)
+        evolved.extend(problem_solving_skills)
+        
+        updated_skills = self._update_outdated_skills()
+        evolved.extend(updated_skills)
+        
+        if evolved:
+            print(f"  进化 {len(evolved)} 个技能")
+            for s in evolved:
+                print(f"    - {s.get('action', '')}: {s.get('skill_name', '')}")
+        else:
+            print("  ℹ️ 无需进化技能")
+        
+        return evolved
+    
+    def _create_workflow_skills(self) -> list:
+        """为高频工作流创建专用技能"""
+        evolved = []
+        
+        workflows = {
+            'backup-automation': ('备份任务', 64),
+            'website-optimization': ('网站改进', 61),
+            'skill-development': ('技能开发', 27),
+        }
+        
+        skills_dir = Path("/home/admin/.hermes/skills")
+        
+        for skill_id, (workflow_name, frequency) in workflows.items():
+            if frequency >= 50:
+                existing = list(skills_dir.rglob(f'*{skill_id}*'))
+                if not existing:
+                    skill_dir = skills_dir / "devops" / f"{skill_id}"
+                    skill_dir.mkdir(parents=True, exist_ok=True)
+                    skill_md = skill_dir / "SKILL.md"
+                    
+                    if not skill_md.exists():
+                        content = f"""---
+name: {skill_id}
+description: 自动化{workflow_name}流程
+category: devops
+---
+
+# {workflow_name}自动化
+
+## Overview
+
+自动执行{workflow_name}的标准流程，减少手动操作。
+
+## Trigger
+
+当检测到{workflow_name}相关任务时自动触发。
+
+## Steps
+
+1. 识别工作流类型
+2. 加载配置
+3. 执行自动化流程
+4. 验证结果
+5. 记录日志
+"""
+                        skill_md.write_text(content, encoding='utf-8')
+                        evolved.append({
+                            'action': 'create',
+                            'skill_name': skill_id,
+                            'category': 'devops',
+                            'reason': f'高频工作流：{workflow_name}（{frequency} 次提及）'
+                        })
+        
+        return evolved
+    
+    def _create_problem_solving_skills(self, proactive_issues: list) -> list:
+        """为持续问题创建解决技能"""
+        evolved = []
+        
+        persistent_issues = [i for i in proactive_issues if i.get('type') == 'persistent_issue']
+        
+        for issue in persistent_issues:
+            issue_type = issue.get('title', '').replace('持续问题：', '')
+            skill_id = f"solve-{issue_type.lower().replace(' ', '-')}"
+            
+            skills_dir = Path("/home/admin/.hermes/skills")
+            skill_dir = skills_dir / "devops" / skill_id
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            skill_md = skill_dir / "SKILL.md"
+            
+            if not skill_md.exists():
+                content = f"""---
+name: {skill_id}
+description: 解决{issue_type}问题
+category: devops
+---
+
+# 解决{issue_type}
+
+## Overview
+
+自动检测并解决{issue_type}问题。
+
+## Problem
+
+{issue.get('description', '')}
+
+## Solution
+
+{issue.get('suggestion', '需要人工介入')}
+"""
+                skill_md.write_text(content, encoding='utf-8')
+                evolved.append({
+                    'action': 'create',
+                    'skill_name': skill_id,
+                    'category': 'devops',
+                    'reason': f'持续问题：{issue_type}'
+                })
+        
+        return evolved
+    
+    def _update_outdated_skills(self) -> list:
+        """更新过时技能"""
+        evolved = []
+        
+        skills_dir = Path("/home/admin/.hermes/skills")
+        for skill_md in skills_dir.rglob("SKILL.md"):
+            try:
+                mtime = skill_md.stat().st_mtime
+                from datetime import datetime
+                last_modified = datetime.fromtimestamp(mtime)
+                days_old = (datetime.now() - last_modified).days
+                
+                if days_old > 30:
+                    evolved.append({
+                        'action': 'needs_update',
+                        'skill_name': skill_md.parent.name,
+                        'category': skill_md.parent.parent.name,
+                        'reason': f'已 {days_old} 天未更新'
+                    })
+            except Exception:
+                pass
+        
+        return evolved[:5]
+    
+    def _accumulate_knowledge(self, plan: dict, verification: dict, proactive_issues: list) -> dict:
+        """知识积累 - 持续积累最佳实践和教训"""
+        print("\n📚 知识积累...")
+        
+        knowledge_file = EVOLUTION_DIR / "knowledge-base.json"
+        knowledge = self._load_knowledge_base()
+        
+        effective_patterns = self._extract_effective_patterns(verification)
+        knowledge['effective_patterns'].extend(effective_patterns)
+        
+        failure_lessons = self._extract_failure_lessons(verification)
+        knowledge['failure_lessons'].extend(failure_lessons)
+        
+        user_preferences = self._extract_user_preferences()
+        knowledge['user_preferences'].extend(user_preferences)
+        
+        best_practices = self._extract_best_practices(plan)
+        knowledge['best_practices'].extend(best_practices)
+        
+        knowledge = self._deduplicate_knowledge(knowledge)
+        
+        with open(knowledge_file, 'w', encoding='utf-8') as f:
+            json.dump(knowledge, f, ensure_ascii=False, indent=2)
+        
+        print(f"  ✅ 知识库已更新：{knowledge_file}")
+        print(f"  有效模式：{len(knowledge['effective_patterns'])} 个")
+        print(f"  失败教训：{len(knowledge['failure_lessons'])} 个")
+        print(f"  用户偏好：{len(knowledge['user_preferences'])} 个")
+        print(f"  最佳实践：{len(knowledge['best_practices'])} 个")
+        
+        return knowledge
+    
+    def _load_knowledge_base(self) -> dict:
+        """加载知识库"""
+        knowledge_file = EVOLUTION_DIR / "knowledge-base.json"
+        if knowledge_file.exists():
+            try:
+                with open(knowledge_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        
+        return {
+            'effective_patterns': [],
+            'failure_lessons': [],
+            'user_preferences': [],
+            'best_practices': [],
+            'last_updated': datetime.now().isoformat()
+        }
+    
+    def _extract_effective_patterns(self, verification: dict) -> list:
+        """提取有效的改进模式"""
+        return [{'pattern_id': imp_id, 'timestamp': datetime.now().isoformat()} 
+                for imp_id in verification.get('verified', [])]
+    
+    def _extract_failure_lessons(self, verification: dict) -> list:
+        """提取失败的教训"""
+        return [{'lesson_id': imp_id, 'timestamp': datetime.now().isoformat(),
+                 'note': f'改进 {imp_id} 未生效，需重新评估策略'}
+                for imp_id in verification.get('failed', [])]
+    
+    def _extract_user_preferences(self) -> list:
+        """提取用户偏好"""
+        preferences = []
+        
+        correction_patterns = [
+            (r'用户.*?不要.*?([^\n]+)', '用户明确禁止'),
+            (r'用户.*?希望.*?([^\n]+)', '用户期望'),
+            (r'用户.*?偏好.*?([^\n]+)', '用户偏好'),
+        ]
+        
+        for pattern, category in correction_patterns:
+            matches = re.finditer(pattern, self.history_content)
+            for match in list(matches)[:3]:
+                preferences.append({
+                    'category': category,
+                    'content': match.group(0)[:100],
+                    'timestamp': datetime.now().isoformat()
+                })
+        
+        return preferences
+    
+    def _extract_best_practices(self, plan: dict) -> list:
+        """提取最佳实践"""
+        return [{
+            'practice': opt.get('suggestion', ''),
+            'target': opt.get('target', opt.get('workflow', opt.get('api', ''))),
+            'priority': opt.get('priority', 'P3'),
+            'timestamp': datetime.now().isoformat()
+        } for opt in plan.get('optimizations', []) if opt.get('priority') in ('P0', 'P1')]
+    
+    def _deduplicate_knowledge(self, knowledge: dict) -> dict:
+        """去重并限制知识库大小"""
+        max_items = 50
+        
+        for key in ['effective_patterns', 'failure_lessons', 'user_preferences', 'best_practices']:
+            if key in knowledge:
+                seen = set()
+                unique = []
+                for item in knowledge[key]:
+                    item_hash = hash(json.dumps(item, sort_keys=True, default=str))
+                    if item_hash not in seen:
+                        seen.add(item_hash)
+                        unique.append(item)
+                knowledge[key] = unique[-max_items:]
+        
+        knowledge['last_updated'] = datetime.now().isoformat()
+        return knowledge
+    
     def generate_evolution_plan(self):
         """生成进化计划"""
         print("\n📋 生成进化计划...")
@@ -882,7 +1379,34 @@ class AgentEvolutionAnalyzer:
                 report += f"| #{cycle['cycle']} | {cycle['improvements_count']} | {cycle['applied_count']} | {v.get('verified', 0)} | {v.get('pending', 0)} | {v.get('failed', 0)} |\n"
             report += "\n"
         
-        report += f"""---
+        # 阶段 4：主动进化结果
+        evolved_skills = plan.get('evolved_skills', [])
+        knowledge_summary = plan.get('knowledge_summary', {})
+        
+        if evolved_skills or knowledge_summary:
+            report += f"""## 🧬 主动进化
+
+### 技能进化
+
+"""
+            if evolved_skills:
+                report += f"**进化技能数**: {len(evolved_skills)}\n\n"
+                for skill in evolved_skills[:5]:
+                    report += f"- **{skill.get('skill_name', '')}** ({skill.get('action', '')}): {skill.get('reason', '')}\n"
+            else:
+                report += "✅ 无需进化技能\n"
+            
+            report += f"""
+### 知识积累
+
+| 类型 | 数量 |
+|------|------|
+| 有效模式 | {knowledge_summary.get('effective_patterns', 0)} |
+| 失败教训 | {knowledge_summary.get('failure_lessons', 0)} |
+| 用户偏好 | {knowledge_summary.get('user_preferences', 0)} |
+| 最佳实践 | {knowledge_summary.get('best_practices', 0)} |
+
+---
 
 ## 📁 输出文件
 
@@ -964,6 +1488,30 @@ class AgentEvolutionAnalyzer:
         
         # 阶段 3：记录反馈循环
         self._record_feedback(plan, applied, verification)
+        
+        # ============================================
+        # 阶段 4：主动进化
+        # ============================================
+        
+        # 4.1 主动发现问题
+        proactive_issues = self._detect_proactive_issues(plan)
+        
+        # 4.2 生成主动优化建议
+        proactive_suggestions = self._generate_proactive_suggestions(plan, proactive_issues)
+        plan['proactive_suggestions'] = proactive_suggestions
+        
+        # 4.3 技能进化
+        evolved_skills = self._evolve_skills(plan, proactive_issues)
+        plan['evolved_skills'] = evolved_skills
+        
+        # 4.4 知识积累
+        knowledge = self._accumulate_knowledge(plan, verification, proactive_issues)
+        plan['knowledge_summary'] = {
+            'effective_patterns': len(knowledge.get('effective_patterns', [])),
+            'failure_lessons': len(knowledge.get('failure_lessons', [])),
+            'user_preferences': len(knowledge.get('user_preferences', [])),
+            'best_practices': len(knowledge.get('best_practices', []))
+        }
         
         # 8. 生成进化报告
         report = self.generate_report(plan, trend, verification)
