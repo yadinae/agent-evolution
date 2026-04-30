@@ -246,18 +246,27 @@ class AgentEvolutionAnalyzer:
         """分析技能使用情况"""
         print("\n🛠️ 分析技能使用情况...")
         
-        skills_dir = WORKSPACE / "skills"
+        # 修复：使用正确的技能路径
+        skills_dir = Path("/home/admin/.hermes/skills")
         if skills_dir.exists():
-            skill_count = len([d for d in skills_dir.iterdir() if d.is_dir()])
-            print(f"  已安装技能：{skill_count} 个")
+            # 统计已安装技能（只计顶层技能目录）
+            all_skills = []
+            for cat_dir in skills_dir.iterdir():
+                if cat_dir.is_dir():
+                    for skill_dir in cat_dir.iterdir():
+                        if skill_dir.is_dir() and (skill_dir / "SKILL.md").exists():
+                            all_skills.append(skill_dir.name)
+            print(f"  已安装技能：{len(all_skills)} 个")
             
             # 检查技能文档完整性
             skills_without_docs = []
-            for skill_dir in skills_dir.iterdir():
-                if skill_dir.is_dir():
-                    skill_md = skill_dir / "SKILL.md"
-                    if not skill_md.exists():
-                        skills_without_docs.append(skill_dir.name)
+            for cat_dir in skills_dir.iterdir():
+                if cat_dir.is_dir():
+                    for skill_dir in cat_dir.iterdir():
+                        if skill_dir.is_dir() and not (skill_dir / "SKILL.md").exists():
+                            # Skip reference/template/script subdirs
+                            if skill_dir.name not in ('references', 'templates', 'scripts', 'assets'):
+                                skills_without_docs.append(f"{cat_dir.name}/{skill_dir.name}")
             
             if skills_without_docs:
                 self.improvements.append({
@@ -267,6 +276,27 @@ class AgentEvolutionAnalyzer:
                     'suggestion': '为缺少 SKILL.md 的技能补充文档'
                 })
                 print(f"  ⚠️ 缺少 SKILL.md 的技能：{len(skills_without_docs)} 个")
+        
+        # 分析技能实际使用频率（从 HISTORY.md 中提取）
+        print("\n📊 技能使用统计...")
+        skill_usage = Counter()
+        skill_invocation_patterns = [
+            r'skill_view\(name=[\'"]([^\'"]+)[\'"]\)',
+            r'skills_list',
+            r'skill_manage\(action=',
+        ]
+        for pattern in skill_invocation_patterns:
+            matches = re.findall(pattern, self.history_content)
+            for m in matches:
+                if isinstance(m, str) and m:
+                    skill_usage[m] += 1
+        
+        if skill_usage:
+            print(f"  检测到 {len(skill_usage)} 个技能调用记录")
+            for skill, count in skill_usage.most_common(10):
+                print(f"    {skill}: {count} 次")
+        else:
+            print("  ⚠️ 未检测到技能调用记录（HISTORY.md 中无 skill_view 调用）")
     
     def analyze_api_health(self):
         """分析 API 健康状态"""
@@ -309,16 +339,26 @@ class AgentEvolutionAnalyzer:
         print(f"  ✅ 进化计划已保存：{plan_file}")
         return plan
     
-    def _get_evolution_cycle(self):
-        """获取进化周期数"""
+    def _get_evolution_cycle(self) -> int:
+        """获取进化周期数（并写回状态）"""
         state_file = EVOLUTION_DIR / "evolution_state.json"
+        cycle = 1
         if state_file.exists():
             with open(state_file, 'r') as f:
                 state = json.load(f)
-                return state.get('cycle', 0) + 1
-        return 1
+                cycle = state.get('cycle', 0) + 1
+        else:
+            state = {}
+        
+        # 写回状态（修复 cycle 始终为 1 的 bug）
+        state['cycle'] = cycle
+        state['last_run'] = datetime.now().isoformat()
+        with open(state_file, 'w') as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        
+        return cycle
     
-    def generate_report(self, plan):
+    def generate_report(self, plan, trend=None):
         """生成进化报告"""
         print("\n📄 生成进化报告...")
         
@@ -378,7 +418,35 @@ class AgentEvolutionAnalyzer:
         report += f"""
 ---
 
-## 🎯 执行建议
+"""
+        # 添加趋势对比（如果有）
+        if trend:
+            report += f"""## 📈 趋势对比（vs 上一周期）
+
+| 指标 | 上一周期 | 本周期 | 变化 |
+|------|---------|--------|------|
+| 改进机会 | {trend['improvements']['yesterday']} | {trend['improvements']['today']} | {trend['improvements']['direction']} ({trend['improvements']['change']:+d}) |
+| 优化建议 | {trend['optimizations']['yesterday']} | {trend['optimizations']['today']} | {trend['optimizations']['direction']} ({trend['optimizations']['change']:+d}) |
+| 学习记录 | {trend['learnings']['yesterday']} | {trend['learnings']['today']} | {trend['learnings']['direction']} ({trend['learnings']['change']:+d}) |
+"""
+            if trend.get('new_issues'):
+                report += f"\n### 🆕 新增问题\n"
+                for issue in trend['new_issues']:
+                    report += f"- {issue}\n"
+            
+            if trend.get('resolved_issues'):
+                report += f"\n### ✅ 已解决问题\n"
+                for issue in trend['resolved_issues']:
+                    report += f"- {issue}\n"
+            
+            if trend.get('persistent_issues'):
+                report += f"\n### ⏳ 持续问题（多周期未解决）\n"
+                for issue in trend['persistent_issues']:
+                    report += f"- {issue}\n"
+            
+            report += "\n---\n\n"
+        
+        report += f"""## 🎯 执行建议
 
 ### 立即执行 (P0)
 1. 将用户偏好记录到 MEMORY.md 和 AGENTS.md
@@ -393,7 +461,6 @@ class AgentEvolutionAnalyzer:
 ### 长期执行 (P2)
 1. 建立技能使用统计系统
 2. 实现自动进化循环
-3. 集成 OpenSpace MCP 进行技能进化
 
 ---
 
@@ -457,8 +524,14 @@ class AgentEvolutionAnalyzer:
         # 7. 生成进化计划
         plan = self.generate_evolution_plan()
         
-        # 8. 生成进化报告
-        report = self.generate_report(plan)
+        # 7.5. 趋势对比分析（与上一周期对比）
+        trend = self._compare_with_last_cycle(plan)
+        
+        # 7.6. 自动应用安全改进
+        applied = self._apply_safe_improvements(plan)
+        
+        # 8. 生成进化报告（含趋势对比）
+        report = self.generate_report(plan, trend)
         
         # 9. 更新会话状态：完成
         self.wal.update_session_state({
@@ -514,7 +587,9 @@ class AgentEvolutionAnalyzer:
             'optimizations': len(self.optimizations),
             'report_path': str(REPORT_FILE),
             'has_anomaly': has_anomaly,
-            'notification_sent': has_anomaly
+            'notification_sent': has_anomaly,
+            'trend': trend if trend else {},
+            'applied_improvements': applied if applied else []
         }
     
     def _check_for_anomalies(self) -> bool:
@@ -568,6 +643,155 @@ class AgentEvolutionAnalyzer:
             print(f"  检测到异常：错误数={error_count}, 严重错误={has_critical_error}, P0 纠正={has_p0_correction}, P0 改进={has_p0_improvement}")
         
         return has_anomaly
+    
+    def _compare_with_last_cycle(self, current_plan: dict) -> dict:
+        """与上一周期对比，生成趋势报告"""
+        print("\n📈 趋势对比分析...")
+        
+        # 查找昨天的进化计划
+        import glob
+        plan_pattern = str(EVOLUTION_DIR / "evolution-plan-*.json")
+        plans = sorted(glob.glob(plan_pattern))
+        
+        if len(plans) < 2:
+            print("  ⚠️ 没有足够的历史数据进行趋势对比")
+            return {}
+        
+        # 加载昨天的计划
+        yesterday_plan_path = plans[-2]  # 倒数第二个（最新的是今天的）
+        try:
+            with open(yesterday_plan_path, 'r') as f:
+                yesterday_plan = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            print("  ⚠️ 无法加载昨天的进化计划")
+            return {}
+        
+        # 提取关键指标
+        today_improvements = len(current_plan.get('improvements', []))
+        yesterday_improvements = len(yesterday_plan.get('improvements', []))
+        today_optimizations = len(current_plan.get('optimizations', []))
+        yesterday_optimizations = len(yesterday_plan.get('optimizations', []))
+        today_learnings = len(current_plan.get('learnings', []))
+        yesterday_learnings = len(yesterday_plan.get('learnings', []))
+        
+        # 计算趋势
+        trend = {
+            'date': datetime.now().strftime('%Y-%m-%d'),
+            'cycle': current_plan.get('cycle', 1),
+            'improvements': {
+                'today': today_improvements,
+                'yesterday': yesterday_improvements,
+                'change': today_improvements - yesterday_improvements,
+                'direction': '↑' if today_improvements > yesterday_improvements else ('↓' if today_improvements < yesterday_improvements else '→')
+            },
+            'optimizations': {
+                'today': today_optimizations,
+                'yesterday': yesterday_optimizations,
+                'change': today_optimizations - yesterday_optimizations,
+                'direction': '↑' if today_optimizations > yesterday_optimizations else ('↓' if today_optimizations < yesterday_optimizations else '→')
+            },
+            'learnings': {
+                'today': today_learnings,
+                'yesterday': yesterday_learnings,
+                'change': today_learnings - yesterday_learnings,
+                'direction': '↑' if today_learnings > yesterday_learnings else ('↓' if today_learnings < yesterday_learnings else '→')
+            }
+        }
+        
+        # 对比具体的改进项，识别新增和已解决的
+        today_imp_types = set(i.get('type', '') + ':' + i.get('category', i.get('workflow', '')) for i in current_plan.get('improvements', []))
+        yesterday_imp_types = set(i.get('type', '') + ':' + i.get('category', i.get('workflow', '')) for i in yesterday_plan.get('improvements', []))
+        
+        trend['new_issues'] = list(today_imp_types - yesterday_imp_types)
+        trend['resolved_issues'] = list(yesterday_imp_types - today_imp_types)
+        trend['persistent_issues'] = list(today_imp_types & yesterday_imp_types)
+        
+        # 打印趋势
+        print(f"  改进机会: {yesterday_improvements} → {today_improvements} {trend['improvements']['direction']} (变化: {trend['improvements']['change']:+d})")
+        print(f"  优化建议: {yesterday_optimizations} → {today_optimizations} {trend['optimizations']['direction']} (变化: {trend['optimizations']['change']:+d})")
+        print(f"  学习记录: {yesterday_learnings} → {today_learnings} {trend['learnings']['direction']} (变化: {trend['learnings']['change']:+d})")
+        
+        if trend['new_issues']:
+            print(f"  🆕 新增问题: {len(trend['new_issues'])} 个")
+            for issue in trend['new_issues']:
+                print(f"    + {issue}")
+        
+        if trend['resolved_issues']:
+            print(f"  ✅ 已解决问题: {len(trend['resolved_issues'])} 个")
+            for issue in trend['resolved_issues']:
+                print(f"    - {issue}")
+        
+        if trend['persistent_issues']:
+            print(f"  ⏳ 持续问题: {len(trend['persistent_issues'])} 个")
+            for issue in trend['persistent_issues']:
+                print(f"    * {issue}")
+        
+        return trend
+    
+    def _apply_safe_improvements(self, plan: dict):
+        """自动应用安全的改进项"""
+        print("\n🔧 自动应用安全改进...")
+        
+        applied = []
+        
+        for imp in plan.get('improvements', []):
+            imp_type = imp.get('type', '')
+            
+            # 技能文档补充是安全的自动改进
+            if imp_type == 'skill_documentation':
+                skills = imp.get('skills', [])
+                for skill_path in skills:
+                    # 跳过已知是插件 stub 的技能
+                    if '/' in skill_path:
+                        cat, name = skill_path.split('/', 1)
+                        skill_dir = Path(f"/home/admin/.hermes/skills/{cat}/{name}")
+                    else:
+                        continue
+                    
+                    if not skill_dir.exists():
+                        continue
+                    
+                    skill_md = skill_dir / "SKILL.md"
+                    if not skill_md.exists():
+                        # 检查是否有 DESCRIPTION.md（插件 stub）
+                        desc_md = skill_dir / "DESCRIPTION.md"
+                        if desc_md.exists():
+                            try:
+                                desc_content = desc_md.read_text(encoding='utf-8')
+                                # 提取 description
+                                import re
+                                desc_match = re.search(r'description:\s*[\'"]?(.+?)[\'"]?\s*$', desc_content, re.MULTILINE)
+                                if desc_match:
+                                    description = desc_match.group(1).strip()
+                                    # 创建基础 SKILL.md
+                                    skill_content = f"""---
+name: {name}
+description: {description}
+category: {cat}
+---
+
+# {name.replace('-', ' ').title()}
+
+{description}
+
+## Overview
+
+This skill is auto-generated from plugin metadata. Full documentation pending.
+
+## Usage
+
+See plugin documentation for usage details.
+"""
+                                    skill_md.write_text(skill_content, encoding='utf-8')
+                                    applied.append(f"为 {skill_path} 创建基础 SKILL.md")
+                                    print(f"  ✅ 已为 {skill_path} 创建基础 SKILL.md")
+                            except Exception as e:
+                                print(f"  ⚠️ 创建 {skill_path} SKILL.md 失败: {e}")
+        
+        if not applied:
+            print("  ℹ️  无安全改进可自动应用")
+        
+        return applied
     
     def _find_last_report(self) -> str:
         """
