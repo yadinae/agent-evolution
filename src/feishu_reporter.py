@@ -7,6 +7,7 @@ Feishu Reporter - 飞书主动报告机制 (修复版)
 import os
 import json
 import re
+import time
 import requests
 from datetime import datetime
 from pathlib import Path
@@ -51,6 +52,22 @@ class FeishuReporter:
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     
+    def _request_with_retry(self, method, url, max_retries=3, **kwargs):
+        """带重试的 HTTP 请求"""
+        for attempt in range(max_retries):
+            try:
+                response = method(url, **kwargs)
+                if response.status_code < 500:
+                    return response
+                print(f"   ⚠️ 请求失败 (HTTP {response.status_code})，第 {attempt + 1}/{max_retries} 次重试")
+            except requests.exceptions.Timeout:
+                print(f"   ⚠️ 请求超时，第 {attempt + 1}/{max_retries} 次重试")
+            except requests.exceptions.ConnectionError:
+                print(f"   ⚠️ 连接错误，第 {attempt + 1}/{max_retries} 次重试")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)  # 指数退避: 1s, 2s, 4s
+        raise Exception(f"请求失败，已重试 {max_retries} 次: {url}")
+    
     def get_tenant_access_token(self) -> str:
         """获取飞书 tenant_access_token"""
         if self.tenant_access_token:
@@ -65,7 +82,7 @@ class FeishuReporter:
             "app_secret": self.app_secret
         }
         
-        response = requests.post(url, json=payload, timeout=10)
+        response = self._request_with_retry(requests.post, url, json=payload, timeout=10)
         result = response.json()
         
         if result.get('code') != 0:
@@ -250,7 +267,7 @@ class FeishuReporter:
             "content": json.dumps({"text": message}, ensure_ascii=False)
         }
         
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        response = self._request_with_retry(requests.post, url, headers=headers, json=payload, timeout=30)
         result = response.json()
         
         if result.get('code') != 0:
