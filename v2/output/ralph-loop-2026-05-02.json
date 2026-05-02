@@ -1,0 +1,12 @@
+{
+  "total_iterations": 1,
+  "completed": true,
+  "history": [
+    {
+      "iteration": 1,
+      "actions": 0,
+      "status": "complete",
+      "reason": "无需改进"
+    }
+  ]
+}

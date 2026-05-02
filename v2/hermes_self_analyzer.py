@@ -553,13 +553,332 @@ TODO: 补充使用方法
 
 
 # ============================================================================
-# 模块 6：报告生成器
+# 模块 6：改进验证器（Ralph Loop 核心 — 验证改进是否真的生效）
+# ============================================================================
+
+class EvolutionVerifier:
+    """验证改进是否真的生效 — 重新分析数据，对比指标变化"""
+    
+    def __init__(self):
+        self.results = []
+    
+    def verify(self, before_state, auto_fix_results):
+        """
+        验证改进效果。
+        before_state: 改进前的基线指标
+        auto_fix_results: 自动执行的结果
+        """
+        # 重新运行分析
+        cron_health = CronHealthAnalyzer().analyze()
+        skills_audit = SkillsQualityAudit().analyze()
+        
+        after_state = {
+            "cron_health": cron_health,
+            "skills_audit": skills_audit,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        verification = {
+            "timestamp": datetime.now().isoformat(),
+            "checks": []
+        }
+        
+        # 检查 1：技能文档完整性
+        before_docs = before_state.get("skills_without_docs", 0)
+        after_docs = skills_audit.get("without_documentation", 0)
+        if after_docs < before_docs:
+            verification["checks"].append({
+                "name": "技能文档补全",
+                "before": f"缺文档: {before_docs}",
+                "after": f"缺文档: {after_docs}",
+                "passed": True,
+                "detail": f"成功补全 {before_docs - after_docs} 个技能文档"
+            })
+        elif after_docs == 0 and before_docs == 0:
+            verification["checks"].append({
+                "name": "技能文档完整性",
+                "before": "已完成",
+                "after": "已完成",
+                "passed": True,
+                "detail": "所有技能都有文档"
+            })
+        elif after_docs == before_docs:
+            verification["checks"].append({
+                "name": "技能文档补全",
+                "before": f"缺文档: {before_docs}",
+                "after": f"缺文档: {after_docs}",
+                "passed": False,
+                "detail": "文档数量无变化"
+            })
+        
+        # 检查 2：Cron 任务健康
+        before_failing = before_state.get("cron_failing", 0)
+        after_failing = cron_health.get("failing", 0)
+        if after_failing < before_failing:
+            verification["checks"].append({
+                "name": "Cron 任务修复",
+                "before": f"异常任务: {before_failing}",
+                "after": f"异常任务: {after_failing}",
+                "passed": True,
+                "detail": f"修复了 {before_failing - after_failing} 个异常任务"
+            })
+        elif after_failing == before_failing:
+            verification["checks"].append({
+                "name": "Cron 任务健康",
+                "before": f"异常任务: {before_failing}",
+                "after": f"异常任务: {after_failing}",
+                "passed": True if after_failing == 0 else False,
+                "detail": "状态无变化" if after_failing == before_failing else f"异常任务 {after_failing} 个"
+            })
+        
+        # 检查 3：自动执行结果
+        fix_success = sum(1 for r in auto_fix_results.get("results", []) if r.get("status") == "success")
+        fix_fail = sum(1 for r in auto_fix_results.get("results", []) if r.get("status") == "error")
+        if fix_success > 0:
+            verification["checks"].append({
+                "name": "自动执行",
+                "before": f"待执行",
+                "after": f"成功 {fix_success}, 失败 {fix_fail}",
+                "passed": fix_fail == 0,
+                "detail": f"执行了 {fix_success} 项改进"
+            })
+        
+        # 判断整体是否通过
+        all_passed = all(c["passed"] for c in verification["checks"])
+        any_progress = any(c["passed"] for c in verification["checks"])
+        
+        verification["all_passed"] = all_passed
+        verification["any_progress"] = any_progress
+        verification["after_state"] = after_state
+        
+        passed_count = sum(1 for c in verification["checks"] if c["passed"])
+        total_count = len(verification["checks"])
+        print(f"  验证: {passed_count}/{total_count} 项通过")
+        for c in verification["checks"]:
+            emoji = "✅" if c["passed"] else "❌"
+            print(f"    {emoji} {c['name']}: {c['detail']}")
+        
+        return verification
+
+
+# ============================================================================
+# 模块 7：Ralph Loop 迭代控制器
+# ============================================================================
+
+class EvolutionState:
+    """Ralph Loop 风格的状态管理 — markdown frontmatter 存状态"""
+    
+    STATE_FILE = EVOLUTION_DIR / "evolution-state.md"
+    
+    @classmethod
+    def save(cls, iteration, max_iterations, baseline, completion_criteria):
+        """保存当前迭代状态"""
+        content = f"""---
+iteration: {iteration}
+max_iterations: {max_iterations}
+timestamp: {datetime.now().isoformat()}
+completion_criteria: {json.dumps(completion_criteria, ensure_ascii=False)}
+---
+
+# Agent Evolution Loop
+
+## 基线指标
+
+{json.dumps(baseline, ensure_ascii=False, indent=2)}
+
+## 改进历史
+
+（每次迭代的改进和验证结果记录在此）
+"""
+        cls.STATE_FILE.write_text(content, encoding="utf-8")
+    
+    @classmethod
+    def append_iteration(cls, iteration, actions, verification):
+        """追加迭代结果到状态文件"""
+        try:
+            content = cls.STATE_FILE.read_text(encoding="utf-8")
+            content += f"\n\n---\n\n## 迭代 {iteration}\n\n"
+            content += f"**执行改进**: {len(actions)} 项\n"
+            content += f"**验证结果**: {sum(1 for c in verification.get('checks', []) if c['passed'])}/{len(verification.get('checks', []))} 项通过\n"
+            
+            for c in verification.get("checks", []):
+                emoji = "✅" if c["passed"] else "❌"
+                content += f"- {emoji} {c['name']}: {c['detail']}\n"
+            
+            cls.STATE_FILE.write_text(content, encoding="utf-8")
+        except Exception as e:
+            print(f"  ⚠️ 更新状态文件失败: {e}")
+    
+    @classmethod
+    def clear(cls):
+        """清除状态文件"""
+        if cls.STATE_FILE.exists():
+            cls.STATE_FILE.unlink()
+    
+    @classmethod
+    def should_continue(cls, max_iterations, verification):
+        """判断是否继续循环"""
+        if not cls.STATE_FILE.exists():
+            return True, 0  # 第一次运行
+        
+        content = cls.STATE_FILE.read_text(encoding="utf-8")
+        # 解析 frontmatter
+        fm_match = re.match(r'---\n(.*?)\n---', content, re.DOTALL)
+        if not fm_match:
+            return True, 0
+        
+        fm = {}
+        for line in fm_match.group(1).split("\n"):
+            if ":" in line:
+                key, val = line.split(":", 1)
+                fm[key.strip()] = val.strip()
+        
+        iteration = int(fm.get("iteration", 0))
+        
+        # 达到最大迭代次数
+        if iteration >= max_iterations:
+            return False, iteration
+        
+        # 所有检查通过
+        if verification.get("all_passed"):
+            return False, iteration
+        
+        # 没有进展（上次和这次都没通过）
+        if not verification.get("any_progress"):
+            return False, iteration
+        
+        return True, iteration
+
+
+class RalphLoop:
+    """Ralph Loop 风格的迭代进化控制器
+    
+    核心理念：分析 → 改进 → 验证 → 循环直到问题解决
+    """
+    
+    def __init__(self, max_iterations=5):
+        self.max_iterations = max_iterations
+        self.history = []
+    
+    def run(self):
+        """运行 Ralph Loop"""
+        print("\n" + "=" * 60)
+        print("🔄 Ralph Loop — 迭代进化开始")
+        print(f"最大迭代次数: {self.max_iterations}")
+        print("=" * 60)
+        
+        iteration = 0
+        
+        while iteration < self.max_iterations:
+            iteration += 1
+            print(f"\n{'='*40}")
+            print(f"🔄 迭代 {iteration}/{self.max_iterations}")
+            print(f"{'='*40}")
+            
+            # === Step 1: 分析 ===
+            print("\n📊 分析系统状态...")
+            cron_health = CronHealthAnalyzer().analyze()
+            skills_audit = SkillsQualityAudit().analyze()
+            git_changes = GitChangeAnalyzer().analyze()
+            
+            # 记录基线指标
+            baseline = {
+                "cron_total": cron_health.get("total_jobs", 0),
+                "cron_healthy": cron_health.get("healthy", 0),
+                "cron_failing": cron_health.get("failing", 0),
+                "skills_total": skills_audit.get("total_skills", 0),
+                "skills_without_docs": skills_audit.get("without_documentation", 0),
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            # 第一次迭代保存基线
+            if iteration == 1:
+                EvolutionState.save(iteration, self.max_iterations, baseline, {
+                    "all_auto_fixable_applied": True,
+                    "skill_docs_complete": skills_audit.get("without_documentation", 0) == 0,
+                    "no_failing_crons": cron_health.get("failing", 0) == 0
+                })
+            
+            # === Step 2: 生成改进计划 ===
+            print("\n🎯 生成改进计划...")
+            planner = ActionPlanner()
+            plan = planner.generate(cron_health, skills_audit, git_changes)
+            
+            if plan["total_actions"] == 0:
+                print("  ✅ 无需改进，系统状态良好")
+                EvolutionState.clear()
+                self.history.append({
+                    "iteration": iteration,
+                    "actions": 0,
+                    "status": "complete",
+                    "reason": "无需改进"
+                })
+                break
+            
+            print(f"  改进项: {plan['total_actions']}, "
+                  f"可自动执行: {plan['auto_executable']}, "
+                  f"需审核: {plan['needs_review']}")
+            
+            # === Step 3: 自动执行 ===
+            print("\n🤖 执行自动改进...")
+            fixer = AutoFixer()
+            auto_fix_results = fixer.execute(plan)
+            print(f"  已执行: {auto_fix_results['executed']} 项")
+            
+            # === Step 4: 验证改进效果（Ralph Loop 核心） ===
+            print("\n🔍 验证改进效果...")
+            verifier = EvolutionVerifier()
+            verification = verifier.verify(baseline, auto_fix_results)
+            
+            # 记录迭代
+            EvolutionState.append_iteration(iteration, plan.get("actions", []), verification)
+            
+            self.history.append({
+                "iteration": iteration,
+                "actions_executed": auto_fix_results.get("executed", 0),
+                "verification_passed": verification.get("all_passed", False),
+                "any_progress": verification.get("any_progress", False)
+            })
+            
+            # === Step 5: 判断是否继续 ===
+            if verification.get("all_passed"):
+                print("\n✅ 所有验证通过，改进生效！")
+                EvolutionState.clear()
+                break
+            
+            if not verification.get("any_progress"):
+                print("\n⚠️ 本轮无进展，停止迭代")
+                break
+            
+            if iteration >= self.max_iterations:
+                print(f"\n⚠️ 达到最大迭代次数 ({self.max_iterations})，停止")
+                break
+            
+            print(f"\n⏳ 仍有未解决的问题，进入下一轮迭代...")
+        
+        EvolutionState.clear()
+        return self._summarize()
+    
+    def _summarize(self):
+        """生成迭代总结"""
+        total_iterations = len(self.history)
+        last = self.history[-1] if self.history else {}
+        
+        return {
+            "total_iterations": total_iterations,
+            "completed": last.get("status") == "complete" or last.get("verification_passed", False),
+            "history": self.history
+        }
+
+
+# ============================================================================
+# 模块 8：报告生成器
 # ============================================================================
 
 class ReportGenerator:
     """生成人类可读的分析报告"""
     
-    def generate(self, cron_health, skills_audit, git_changes, plan, auto_fix_results):
+    def generate(self, cron_health, skills_audit, git_changes, plan, auto_fix_results, loop_history=None):
         """生成完整的进化报告"""
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         
@@ -650,6 +969,23 @@ class ReportGenerator:
                 status = "✅" if r["status"] == "success" else "❌"
                 report += f"- {status} **{r.get('skill', 'unknown')}**: {r['action']} — {r['status']}\n"
         
+        # Ralph Loop 迭代历史
+        if loop_history and len(loop_history) > 0:
+            report += f"""
+---
+
+## 🔄 Ralph Loop 迭代记录
+
+"""
+            for h in loop_history:
+                status = "✅" if h.get("verification_passed") or h.get("status") == "complete" else "⏳"
+                report += f"### {status} 迭代 {h['iteration']}\n\n"
+                report += f"- 执行改进: {h.get('actions_executed', 0)} 项\n"
+                report += f"- 验证通过: {'是' if h.get('verification_passed') else '否'}\n"
+                if h.get("reason"):
+                    report += f"- 原因: {h['reason']}\n"
+                report += "\n"
+        
         # 总结
         report += f"""
 ---
@@ -673,52 +1009,32 @@ class ReportGenerator:
 
 def main():
     print("=" * 60)
-    print("🧬 Agent Evolution v2 — Hermes 自我进化")
+    print("🧬 Agent Evolution v2 — Hermes 自我进化（Ralph Loop）")
     print("=" * 60)
     
-    # 1. Cron 任务健康分析
-    print("\n📊 分析 Cron 任务健康...")
-    cron_analyzer = CronHealthAnalyzer()
-    cron_health = cron_analyzer.analyze()
-    print(f"  总任务: {cron_health.get('total_jobs', 0)}, "
-          f"健康: {cron_health.get('healthy', 0)}, "
-          f"降级: {cron_health.get('degraded', 0)}, "
-          f"异常: {cron_health.get('failing', 0)}")
+    # 运行 Ralph Loop — 分析 → 改进 → 验证 → 循环
+    ralph = RalphLoop(max_iterations=3)
+    loop_result = ralph.run()
     
-    # 2. 技能库质量审计
-    print("\n📚 审计技能库质量...")
+    # 生成最终报告
+    print("\n📄 生成进化报告...")
+    
+    # 重新获取最终状态用于报告
+    cron_health = CronHealthAnalyzer().analyze()
     skills_audit = SkillsQualityAudit().analyze()
-    print(f"  总技能: {skills_audit.get('total_skills', 0)}, "
-          f"有文档: {skills_audit.get('with_documentation', 0)}, "
-          f"缺文档: {skills_audit.get('without_documentation', 0)}")
-    
-    # 3. Git 变更模式分析
-    print("\n📝 分析项目变更模式...")
     git_changes = GitChangeAnalyzer().analyze()
-    for project, data in git_changes.items():
-        print(f"  {project}: {data['total_commits_30d']} 次提交, "
-              f"活动: {data['activity_level']}")
     
-    # 4. 生成改进计划
-    print("\n🎯 生成改进计划...")
+    # 最后一次迭代的改进计划
     planner = ActionPlanner()
     plan = planner.generate(cron_health, skills_audit, git_changes)
-    print(f"  总改进项: {plan['total_actions']}, "
-          f"可自动执行: {plan['auto_executable']}, "
-          f"需审核: {plan['needs_review']}")
     
-    # 5. 自动执行
-    print("\n🤖 执行自动改进...")
-    fixer = AutoFixer()
-    auto_fix_results = fixer.execute(plan)
-    print(f"  已执行: {auto_fix_results['executed']} 项")
-    
-    # 6. 生成报告
-    print("\n📄 生成进化报告...")
+    # 生成报告
     reporter = ReportGenerator()
-    report = reporter.generate(cron_health, skills_audit, git_changes, plan, auto_fix_results)
+    report = reporter.generate(cron_health, skills_audit, git_changes, plan, 
+                               {"executed": 0, "results": []}, 
+                               loop_history=loop_result.get("history", []))
     
-    # 7. 保存输出
+    # 保存输出
     today = datetime.now().strftime("%Y-%m-%d")
     report_file = EVOLUTION_DIR / f"evolution-report-{today}.md"
     report_file.write_text(report, encoding="utf-8")
@@ -726,13 +1042,18 @@ def main():
     plan_file = EVOLUTION_DIR / f"evolution-plan-{today}.json"
     plan_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
     
-    auto_fix_file = EVOLUTION_DIR / f"auto-fix-{today}.json"
-    auto_fix_file.write_text(json.dumps(auto_fix_results, ensure_ascii=False, indent=2), encoding="utf-8")
+    loop_file = EVOLUTION_DIR / f"ralph-loop-{today}.json"
+    loop_file.write_text(json.dumps(loop_result, ensure_ascii=False, indent=2), encoding="utf-8")
     
     print(f"\n✅ 报告已保存: {report_file}")
     print(f"✅ 计划已保存: {plan_file}")
-    print(f"✅ 执行记录已保存: {auto_fix_file}")
-    print("\n" + "=" * 60)
+    print(f"✅ 迭代记录已保存: {loop_file}")
+    
+    # 总结
+    print(f"\n{'='*60}")
+    print(f"📊 迭代总结: {loop_result['total_iterations']} 轮")
+    print(f"   完成状态: {'✅ 是' if loop_result['completed'] else '⚠️ 未完成'}")
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":
