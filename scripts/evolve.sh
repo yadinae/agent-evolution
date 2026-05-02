@@ -49,6 +49,10 @@ CATEGORY=""
 # 解析参数
 while [[ $# -gt 0 ]]; do
     case $1 in
+    --v2)
+            MODE="v2"
+            shift
+            ;;
         --analyze)
             MODE="analyze"
             shift
@@ -112,6 +116,11 @@ fi
 
 # 执行操作
 case $MODE in
+    v2)
+        echo -e "${YELLOW}运行 Agent Evolution v2（Hermes 自我进化）...${NC}"
+        $PYTHON "$REPO_DIR/v2/hermes_self_analyzer.py"
+        echo -e "${GREEN}v2 分析完成${NC}"
+        ;;
     analyze)
         echo -e "${YELLOW}分析会话历史...${NC}"
         $PYTHON "$REPO_DIR/evolve_analysis.py" --analyze
