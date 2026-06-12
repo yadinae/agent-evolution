@@ -37,3 +37,9 @@ htmlcov/
 # Runtime outputs
 v2/output/
 *.log
+
+# Node.js
+node_modules/
+
+# Session state
+SESSION-STATE.md
