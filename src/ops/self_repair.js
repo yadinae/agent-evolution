@@ -17,14 +17,18 @@ function repair(gitRoot) {
         execSync('git rebase --abort', { cwd: root, stdio: 'ignore' });
         repaired.push('rebase_aborted');
         console.log('[SelfRepair] Aborted pending rebase.');
-    } catch (e) {}
+    } catch (e) {
+        // No rebase in progress — expected, not an error
+    }
 
     // 2. Abort pending merge
     try {
         execSync('git merge --abort', { cwd: root, stdio: 'ignore' });
         repaired.push('merge_aborted');
         console.log('[SelfRepair] Aborted pending merge.');
-    } catch (e) {}
+    } catch (e) {
+        // No merge in progress — expected, not an error
+    }
 
     // 3. Remove stale index.lock
     var lockFile = path.join(root, '.git', 'index.lock');
@@ -37,7 +41,9 @@ function repair(gitRoot) {
                 repaired.push('stale_lock_removed');
                 console.log('[SelfRepair] Removed stale index.lock (' + Math.round(age / 60000) + 'min old).');
             }
-        } catch (e) {}
+        } catch (e) {
+            console.error('[SelfRepair] Failed to remove lock:', e.message);
+        }
     }
 
     // 4. Reset to remote main if local is corrupt (last resort - guarded by flag)
