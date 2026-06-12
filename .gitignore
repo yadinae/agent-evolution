@@ -33,3 +33,7 @@ Thumbs.db
 htmlcov/
 .coverage
 .coverage.*
+
+# Runtime outputs
+v2/output/
+*.log

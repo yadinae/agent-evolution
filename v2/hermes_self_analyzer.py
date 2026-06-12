@@ -285,7 +285,7 @@ class GitChangeAnalyzer:
             )
             
             if result.returncode != 0:
-                return None
+                return {"skipped": True, "reason": "git命令执行失败", "name": name}
             
             commits = result.stdout.strip().split("\n") if result.stdout.strip() else []
             
@@ -316,8 +316,8 @@ class GitChangeAnalyzer:
                 "commit_types": dict(type_counts),
                 "top_changes": commits[:5]
             }
-        except Exception:
-            return None
+        except Exception as e:
+            return {"skipped": True, "reason": f"异常: {str(e)}", "name": name}
     
     def _is_recent(self, commit_line, days):
         """粗略判断提交是否在最近 N 天内（基于列表顺序）"""
@@ -452,6 +452,8 @@ class ActionPlanner:
             return
         
         for project, data in changes.items():
+            if data.get("skipped"):
+                continue  # 跳过无法分析的项目
             if data.get("activity_level") == "inactive":
                 self.actions.append({
                     "id": f"git-inactive-{project}",
@@ -924,9 +926,12 @@ class ReportGenerator:
         report += "\n### 📝 项目活动\n\n"
         if git_changes:
             for project, data in git_changes.items():
-                report += f"**{project}**: {data['total_commits_30d']} 次提交 (30天) | "
-                report += f"本周 {data['commits_this_week']} 次 | "
-                report += f"状态: {data['activity_level']}\n"
+                if data.get("skipped"):
+                    report += f"**{project}**: 数据不可用 ({data.get('reason', '未知')})\n"
+                else:
+                    report += f"**{project}**: {data['total_commits_30d']} 次提交 (30天) | "
+                    report += f"本周 {data['commits_this_week']} 次 | "
+                    report += f"状态: {data['activity_level']}\n"
         else:
             report += "⚠️ 无法获取项目数据\n\n"
         
