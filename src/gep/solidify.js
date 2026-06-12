@@ -1,3 +1,15 @@
+// ────────────────────────────────────────────────────────────
+// solidify.js — 知识固化引擎
+//
+// TODO (refactor): 此文件 ~1200 行且依赖 18 个模块，建议拆分为:
+//   - solidify-core.js     solidify 主流程
+//   - solidify-blast.js   爆破半径分析
+//   - solidify-state.js   状态读写
+//   - solidify-epigenetic.js 表观遗传标记
+//   - solidify-canary.js  金丝雀验证
+// 拆分前需补测试覆盖。
+// ────────────────────────────────────────────────────────────
+
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
@@ -74,6 +86,7 @@ function tryRunCmd(cmd, opts = {}) {
   }
 }
 
+// ── Git / File Helpers ───────────────────────────────────
 function gitListChangedFiles({ repoRoot }) {
   const files = new Set();
   const s1 = tryRunCmd('git diff --name-only', { cwd: repoRoot, timeoutMs: 60000 });

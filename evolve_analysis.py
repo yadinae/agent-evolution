@@ -27,13 +27,12 @@ HISTORY_FILE = WORKSPACE / "cron" / "evolution-history.json"
 EVOLUTION_DIR = WORKSPACE / "evolution"
 REPORT_FILE = EVOLUTION_DIR / f"evolution-report-{datetime.now().strftime('%Y-%m-%d')}.md"
 
-# 导入新增模块
-sys.path.insert(0, str(Path(__file__).parent / "src"))
-from wal_protocol import WALProtocol
-from working_buffer import WorkingBuffer
-from feishu_reporter import FeishuReporter
-from task_analyzer import TaskPerformanceAnalyzer
-from skill_analyzer import SkillQualityAnalyzer
+# 导入新增模块 — 用包路径而非 sys.path 操纵
+from src.wal_protocol import WALProtocol
+from src.working_buffer import WorkingBuffer
+from src.feishu_reporter import FeishuReporter
+from src.task_analyzer import TaskPerformanceAnalyzer
+from src.skill_analyzer import SkillQualityAnalyzer
 
 # 确保输出目录存在
 EVOLUTION_DIR.mkdir(parents=True, exist_ok=True)
