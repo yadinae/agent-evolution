@@ -1,0 +1,39 @@
+{
+  "name": "agent-evolution",
+  "version": "2.0.0",
+  "description": "🧬 Agent 自我进化系统 — Genetic Evolution Protocol + 分析引擎",
+  "type": "commonjs",
+  "main": "scripts/index.js",
+  "scripts": {
+    "evolve": "node scripts/index.js",
+    "evolve:loop": "node scripts/index.js --loop",
+    "analyze": "python3 evolve_analysis.py --analyze",
+    "analyze:v2": "python3 v2/daily_analysis.py"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "python": ">=3.6"
+  },
+  "files": [
+    "src/",
+    "scripts/",
+    "v2/",
+    "evolve_analysis.py",
+    "requirements.txt"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/yadinae/agent-evolution",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yadinae/agent-evolution.git"
+  },
+  "private": false,
+  "keywords": [],
+  "author": "",
+  "bugs": {
+    "url": "https://github.com/yadinae/agent-evolution/issues"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  }
+}

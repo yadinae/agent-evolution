@@ -281,7 +281,8 @@ class GitChangeAnalyzer:
             # 最近 30 天的提交
             result = subprocess.run(
                 ["git", "log", "--oneline", "--since=30 days", "--no-merges"],
-                cwd=repo_dir, capture_output=True, text=True, timeout=10
+                cwd=repo_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                universal_newlines=True, timeout=10
             )
             
             if result.returncode != 0:

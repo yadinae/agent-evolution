@@ -19,11 +19,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from collections import Counter, defaultdict
 
-# 配置
-WORKSPACE = Path("/home/admin/.nanobot/workspace")
-MEMORY_FILE = WORKSPACE / "memory" / "MEMORY.md"
-HISTORY_FILE = WORKSPACE / "memory" / "HISTORY.md"
-EVOLUTION_DIR = WORKSPACE / "memory" / "evolution"
+# 配置 — 通过环境变量可覆盖，默认指向当前 Hermes 环境
+HERMES_HOME = Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")))
+WORKSPACE = Path(os.environ.get("AGENT_EVOLUTION_WORKSPACE", str(HERMES_HOME)))
+MEMORY_FILE = WORKSPACE / "session-state.json"
+HISTORY_FILE = WORKSPACE / "cron" / "evolution-history.json"
+EVOLUTION_DIR = WORKSPACE / "evolution"
 REPORT_FILE = EVOLUTION_DIR / f"evolution-report-{datetime.now().strftime('%Y-%m-%d')}.md"
 
 # 导入新增模块
@@ -257,7 +258,7 @@ class AgentEvolutionAnalyzer:
         print("\n🛠️ 分析技能使用情况...")
         
         # 修复：使用正确的技能路径
-        skills_dir = Path("/home/admin/.hermes/skills")
+        skills_dir = HERMES_HOME / "skills"
         if skills_dir.exists():
             # 统计已安装技能（只计顶层技能目录）
             all_skills = []
@@ -932,7 +933,7 @@ class AgentEvolutionAnalyzer:
             'skill-development': ('技能开发', 27),
         }
         
-        skills_dir = Path("/home/admin/.hermes/skills")
+        skills_dir = HERMES_HOME / "skills"
         
         for skill_id, (workflow_name, frequency) in workflows.items():
             if frequency >= 50:
@@ -987,7 +988,7 @@ category: devops
             issue_type = issue.get('title', '').replace('持续问题：', '')
             skill_id = f"solve-{issue_type.lower().replace(' ', '-')}"
             
-            skills_dir = Path("/home/admin/.hermes/skills")
+            skills_dir = HERMES_HOME / "skills"
             skill_dir = skills_dir / "devops" / skill_id
             skill_dir.mkdir(parents=True, exist_ok=True)
             skill_md = skill_dir / "SKILL.md"
@@ -1027,7 +1028,7 @@ category: devops
         """更新过时技能"""
         evolved = []
         
-        skills_dir = Path("/home/admin/.hermes/skills")
+        skills_dir = HERMES_HOME / "skills"
         for skill_md in skills_dir.rglob("SKILL.md"):
             try:
                 mtime = skill_md.stat().st_mtime
@@ -1727,7 +1728,7 @@ category: devops
                     # 跳过已知是插件 stub 的技能
                     if '/' in skill_path:
                         cat, name = skill_path.split('/', 1)
-                        skill_dir = Path(f"/home/admin/.hermes/skills/{cat}/{name}")
+                        skill_dir = HERMES_HOME / "skills" / cat / name
                     else:
                         continue
                     

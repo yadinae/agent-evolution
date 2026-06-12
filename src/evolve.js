@@ -296,7 +296,10 @@ function checkSystemHealth() {
     // Generic Integration Status Check (Decoupled)
     if (process.env.INTEGRATION_STATUS_CMD) {
       try {
-        const status = execSync(process.env.INTEGRATION_STATUS_CMD, {
+        // 安全：用数组形式避免 shell 注入
+        const parts = process.env.INTEGRATION_STATUS_CMD.split(/\s+/);
+        const cmd = parts[0], args = parts.slice(1);
+        const status = execSync(cmd, args, {
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'ignore'],
           timeout: 2000,
@@ -331,9 +334,11 @@ function getMutationDirective(logContent) {
 }
 
 const STATE_FILE = path.join(getEvolutionDir(), 'evolution_state.json');
-// Read MEMORY.md and USER.md from the WORKSPACE root (not the evolver plugin dir).
-// This avoids symlink breakage if the target file is temporarily deleted.
-const WORKSPACE_ROOT = process.env.OPENCLAW_WORKSPACE || path.resolve(REPO_ROOT, '../..');
+// Read MEMORY.md and USER.md from the WORKSPACE root.
+// Priority: OPENCLAW_WORKSPACE (nanobot) → HERMES_HOME (Hermes) → repo parent
+const WORKSPACE_ROOT = process.env.OPENCLAW_WORKSPACE
+  || process.env.HERMES_HOME
+  || path.resolve(REPO_ROOT, '../..');
 const ROOT_MEMORY = path.join(WORKSPACE_ROOT, 'MEMORY.md');
 const DIR_MEMORY = path.join(MEMORY_DIR, 'MEMORY.md');
 const MEMORY_FILE = fs.existsSync(ROOT_MEMORY) ? ROOT_MEMORY : (fs.existsSync(DIR_MEMORY) ? DIR_MEMORY : ROOT_MEMORY);
