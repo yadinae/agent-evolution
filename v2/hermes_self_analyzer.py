@@ -179,6 +179,9 @@ class SkillsQualityAudit:
         for cat_dir in self.skills_dir.iterdir():
             if not cat_dir.is_dir():
                 continue
+            # 跳过 . 开头的系统目录（如 .curator_backups）
+            if cat_dir.name.startswith("."):
+                continue
             category = cat_dir.name
             
             for skill_dir in cat_dir.iterdir():

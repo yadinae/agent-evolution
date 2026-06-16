@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Agent Evolution v2 每日分析 — 纯 Python 实现（无 subprocess）
-"""
+Agent Evolution v2 每日分析 — 纯 Python 实现（含 AutoFixer）
 
+分析 Hermes 系统状态 → 生成改进计划 → 自动执行可修复项
+"""
 import os
 import json
 import re
@@ -13,12 +14,14 @@ from collections import Counter, defaultdict
 HERMES_HOME = Path(os.path.expanduser("~/.hermes"))
 CRON_OUTPUT_DIR = HERMES_HOME / "cron" / "output"
 SKILLS_DIR = HERMES_HOME / "skills"
+SCRIPTS_DIR = HERMES_HOME / "scripts"
 EVOLUTION_DIR = Path(os.path.expanduser("~/projects/agent-evolution")) / "v2" / "output"
 EVOLUTION_DIR.mkdir(parents=True, exist_ok=True)
 
 now = datetime.now()
 today_str = now.strftime("%Y-%m-%d")
 now_str = now.strftime("%Y-%m-%d %H:%M")
+
 
 # ============================================================================
 # 1. Cron 任务健康分析
@@ -138,6 +141,9 @@ def analyze_skills():
     for cat_dir in sorted(SKILLS_DIR.iterdir()):
         if not cat_dir.is_dir():
             continue
+        # ★ 修复：跳过 . 开头的系统目录（如 .curator_backups）
+        if cat_dir.name.startswith("."):
+            continue
         category = cat_dir.name
 
         for skill_dir in sorted(cat_dir.iterdir()):
@@ -206,22 +212,29 @@ def analyze_git_activity():
     for name, repo_dir in projects.items():
         git_dir = repo_dir / ".git"
         if git_dir.exists():
-            # 检查最近的修改时间
             try:
-                # 检查 HEAD 文件的修改时间作为近似
-                head_file = git_dir / "HEAD"
-                if head_file.exists():
-                    mtime = datetime.fromtimestamp(head_file.stat().st_mtime)
-                    days_ago = (now - mtime).days
+                # 扫描 .git/objects/ 下最新文件的修改时间（比 HEAD mtime 准确）
+                objects_dir = git_dir / "objects"
+                last_mtime = None
+                if objects_dir.exists():
+                    for root, dirs, files in os.walk(objects_dir):
+                        for f in files:
+                            fp = os.path.join(root, f)
+                            fm = os.path.getmtime(fp)
+                            if last_mtime is None or fm > last_mtime:
+                                last_mtime = fm
+                if last_mtime is not None:
+                    mtime_dt = datetime.fromtimestamp(last_mtime)
+                    days_ago = (now - mtime_dt).days
                     results[name] = {
                         "has_git": True,
-                        "last_git_activity": mtime.strftime("%Y-%m-%d"),
+                        "last_git_activity": mtime_dt.strftime("%Y-%m-%d"),
                         "days_since_last_git_activity": days_ago,
                         "activity_level": "active" if days_ago <= 7 else ("low" if days_ago <= 30 else "inactive"),
-                        "note": "无 git 命令，仅基于 .git 目录修改时间判断"
+                        "note": "基于 .git/objects/ 最新文件修改时间判断（无 git 命令调用）"
                     }
                 else:
-                    results[name] = {"has_git": True, "note": "无法读取 .git/HEAD"}
+                    results[name] = {"has_git": True, "note": ".git/objects/ 为空"}
             except Exception as e:
                 results[name] = {"has_git": True, "note": f"检查失败: {str(e)}"}
         else:
@@ -248,12 +261,12 @@ def generate_plan(cron_health, skills_audit, git_activity):
                     "priority": "P1",
                     "title": f"Cron 任务 {job_id} 频繁失败",
                     "description": f"成功率: {job_data.get('success_rate', 0)*100:.0f}%",
-                    "execution": "review",
+                    "execution": "auto",
                     "steps": [
-                        f"检查 ~/.hermes/cron/output/{job_id}/ 中的错误",
-                        "分析最近失败原因",
-                        "修复或调整任务配置"
-                    ]
+                        f"自动重启 cron 任务 {job_id}",
+                        "监控后续运行状态"
+                    ],
+                    "auto_fix": {"type": "restart_cron", "job_id": job_id}
                 })
             if job_data.get("error_patterns"):
                 for err in job_data["error_patterns"][:2]:
@@ -267,7 +280,7 @@ def generate_plan(cron_health, skills_audit, git_activity):
                         "steps": ["分析错误根因", "实施修复"]
                     })
 
-    # 技能库相关
+    # 技能库相关 — ★ 只对真实的技能（非 curator_backups 等）标记 auto
     if "error" not in skills_audit:
         missing = skills_audit.get("missing_docs", [])
         if missing:
@@ -277,8 +290,9 @@ def generate_plan(cron_health, skills_audit, git_activity):
                 "priority": "P2",
                 "title": f"{len(missing)} 个技能缺少 SKILL.md",
                 "description": f"缺失: {', '.join(s['name'] for s in missing[:5])}",
-                "execution": "review",
-                "steps": ["为缺失技能创建基础 SKILL.md"]
+                "execution": "auto",
+                "steps": ["为缺失技能创建基础 SKILL.md"],
+                "auto_fix": {"type": "create_skill_docs", "skills": missing}
             })
 
         empty = skills_audit.get("empty_skills", [])
@@ -332,10 +346,184 @@ def generate_plan(cron_health, skills_audit, git_activity):
 
 
 # ============================================================================
-# 5. 报告生成
+# 5. 自动修复执行器（新模块）
 # ============================================================================
 
-def generate_report(cron_health, skills_audit, git_activity, plan):
+class EvolutionExecutor:
+    """
+    分析后的自动执行阶段。
+    只运行标记为 "execution": "auto" 的改进项。
+    """
+    def __init__(self):
+        self.results = []
+
+    def execute(self, plan):
+        if not plan or not plan.get("actions"):
+            return {"executed": 0, "results": []}
+
+        for action in plan["actions"]:
+            if action.get("execution") != "auto":
+                continue
+
+            action_type = action.get("type", "")
+            auto_fix = action.get("auto_fix", {})
+
+            if action_type == "skill_documentation" and auto_fix.get("type") == "create_skill_docs":
+                self._create_missing_skill_docs(auto_fix.get("skills", []))
+            elif action_type == "cron_failure" and auto_fix.get("type") == "restart_cron":
+                self._schedule_cron_restart(auto_fix.get("job_id", ""))
+
+        return {
+            "timestamp": now.isoformat(),
+            "executed": len(self.results),
+            "results": self.results
+        }
+
+    def _create_missing_skill_docs(self, skills):
+        for skill in skills:
+            name = skill["name"]
+            parts = name.split("/")
+            if len(parts) == 2:
+                category, skill_name = parts
+            else:
+                category = "general"
+                skill_name = name
+
+            skill_path = SKILLS_DIR / category / skill_name
+            skill_md = skill_path / "SKILL.md"
+
+            if not skill_path.exists() or skill_md.exists():
+                self.results.append({
+                    "skill": name,
+                    "action": "create_skill_md",
+                    "status": "skipped",
+                    "reason": "目录不存在或文件已存在"
+                })
+                continue
+
+            try:
+                content = f"""---
+name: {skill_name}
+description: TODO: 补充技能描述
+category: {category}
+---
+
+# {skill_name}
+
+## 概述
+
+TODO: 补充技能说明
+
+## 使用方法
+
+TODO: 补充使用方法
+
+## 注意事项
+
+- 待补充
+"""
+                skill_md.write_text(content, encoding="utf-8")
+                self.results.append({
+                    "skill": name,
+                    "action": "create_skill_md",
+                    "path": str(skill_md),
+                    "status": "success"
+                })
+                print(f"  ✅ 已创建 SKILL.md: {skill_md}")
+            except Exception as e:
+                self.results.append({
+                    "skill": name,
+                    "action": "create_skill_md",
+                    "status": "error",
+                    "error": str(e)
+                })
+                print(f"  ❌ 创建失败 {name}: {e}")
+
+    def _schedule_cron_restart(self, job_id):
+        """写入 cron 重启指令供 MCP server / cron supervisor 消费"""
+        if not job_id:
+            return
+
+        instruction = {
+            "type": "cron_restart",
+            "job_id": job_id,
+            "timestamp": now.isoformat(),
+            "reason": "自动检测到频繁失败，触发重启"
+        }
+
+        fix_dir = EVOLUTION_DIR / "fix_instructions"
+        fix_dir.mkdir(parents=True, exist_ok=True)
+
+        instruction_file = fix_dir / f"restart-cron-{job_id}-{today_str}.json"
+        try:
+            instruction_file.write_text(json.dumps(instruction, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.results.append({
+                "action": "schedule_cron_restart",
+                "job_id": job_id,
+                "instruction_file": str(instruction_file),
+                "status": "scheduled"
+            })
+            print(f"  📋 已生成 cron 重启指令: {instruction_file}")
+        except Exception as e:
+            self.results.append({
+                "action": "schedule_cron_restart",
+                "job_id": job_id,
+                "status": "error",
+                "error": str(e)
+            })
+
+
+# ============================================================================
+# 6. GEP 信号桥接（新模块）
+# ============================================================================
+
+def emit_gep_signals(plan, execution_results):
+    """
+    将分析结果转化为 GEP 引擎可消费的信号文件。
+    GEP 的 signals.js 会读取这些文件作为进化信号。
+    """
+    signals = []
+
+    # 从改进计划中提取信号
+    for action in plan.get("actions", []):
+        p = action.get("priority", "P3")
+        if p in ("P0", "P1"):
+            signals.append("log_error")
+        if action.get("type") == "cron_failure":
+            signals.append("recurring_error")
+        if action.get("type") == "skill_documentation":
+            signals.append("capability_gap")
+        if action.get("type") == "skill_content":
+            signals.append("user_improvement_suggestion")
+
+    # 从执行结果中提取信号
+    if execution_results.get("executed", 0) > 0:
+        signals.append("stable_success_plateau")
+
+    if not signals:
+        signals.append("stable_success_plateau")
+
+    signal_data = {
+        "timestamp": now.isoformat(),
+        "source": "agent_evolution_v2_daily_analysis",
+        "signals": list(set(signals)),
+        "plan": {
+            "total_actions": plan.get("total_actions", 0),
+            "auto_executed": execution_results.get("executed", 0)
+        }
+    }
+
+    signal_file = EVOLUTION_DIR / f"gep-signals-{today_str}.json"
+    signal_file.write_text(json.dumps(signal_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"  📡 GEP 信号已生成: {signal_file} ({len(signals)} 个信号)")
+    return signal_data
+
+
+# ============================================================================
+# 7. 报告生成
+# ============================================================================
+
+def generate_report(cron_health, skills_audit, git_activity, plan, execution_results=None):
     report = f"""# Agent Evolution v2 — 每日分析报告
 
 **生成时间**: {now_str}
@@ -407,6 +595,7 @@ def generate_report(cron_health, skills_audit, git_activity, plan):
         report += "⚠️ 无法获取项目数据\n"
 
     report += f"""
+
 ---
 
 ## 🎯 改进计划
@@ -432,14 +621,31 @@ def generate_report(cron_health, skills_audit, git_activity, plan):
     if not plan.get("actions"):
         report += "✅ 无需改进，系统状态良好\n"
 
+    # ★ 新：自动执行结果
+    if execution_results and execution_results.get("executed", 0) > 0:
+        report += f"""
+
+---
+
+## ✅ 自动执行结果
+
+本次自动执行了 {execution_results['executed']} 项改进：
+
+"""
+        for r in execution_results.get("results", []):
+            status_emoji = {"success": "✅", "skipped": "⏭️", "error": "❌", "scheduled": "📋"}.get(r.get("status", ""), "❓")
+            skill_name = r.get("skill", r.get("job_id", r.get("action", "未知")))
+            report += f"- {status_emoji} **{skill_name}**: {r.get('action', '')} — {r.get('status', '')}\n"
+
     report += f"""
+
 ---
 
 ## 📋 总结
 
 1. **系统整体健康状况**: 见上方概览
 2. **具体问题**: 见改进计划
-3. **自动执行操作**: 本次为只读分析，未执行自动修复
+3. **自动执行操作**: {"已完成 " + str(execution_results.get('executed', 0)) + " 项改进" if execution_results and execution_results.get('executed', 0) > 0 else "无自动执行项"}
 4. **需人工处理**: 见改进计划中"需人工审核"和"需讨论"项
 
 ---
@@ -453,9 +659,9 @@ def generate_report(cron_health, skills_audit, git_activity, plan):
 # 主流程
 # ============================================================================
 
-def main():
+def main(execute_fixes=True):
     print("=" * 60)
-    print("🧬 Agent Evolution v2 — 每日分析（纯 Python）")
+    print("🧬 Agent Evolution v2 — 每日分析（含自动执行）")
     print("=" * 60)
 
     # 1. Cron 健康
@@ -485,13 +691,32 @@ def main():
     # 4. 生成改进计划
     print("\n🎯 生成改进计划...")
     plan = generate_plan(cron_health, skills_audit, git_activity)
-    print(f"  改进项: {plan['total_actions']}")
+    print(f"  改进项: {plan['total_actions']} (自动: {plan['auto_executable']}, "
+          f"待审: {plan['needs_review']}, 讨论: {plan['for_discussion']})")
 
-    # 5. 生成报告
+    # ★ 5. 执行自动修复（核心新增！）
+    execution_results = {"executed": 0, "results": []}
+    if execute_fixes and plan.get("auto_executable", 0) > 0:
+        print("\n🤖 执行自动改进...")
+        executor = EvolutionExecutor()
+        execution_results = executor.execute(plan)
+        print(f"  已执行: {execution_results['executed']} 项")
+        for r in execution_results.get("results", []):
+            status_emoji = {"success": "✅", "skipped": "⏭️", "error": "❌", "scheduled": "📋"}.get(r.get("status", ""), "❓")
+            print(f"    {status_emoji} {r.get('skill', r.get('job_id', r.get('action', '?')))}: {r.get('status', '')}")
+    elif execute_fixes:
+        print("\n🤖 自动改进: 无可执行项，跳过")
+
+    # ★ 6. 生成 GEP 信号（新！）
+    print("\n📡 生成 GEP 进化信号...")
+    signal_data = emit_gep_signals(plan, execution_results)
+    print(f"  信号: {len(signal_data.get('signals', []))} 个")
+
+    # 7. 生成报告
     print("\n📄 生成报告...")
-    report = generate_report(cron_health, skills_audit, git_activity, plan)
+    report = generate_report(cron_health, skills_audit, git_activity, plan, execution_results)
 
-    # 6. 保存文件
+    # 8. 保存文件
     report_file = EVOLUTION_DIR / f"evolution-report-{today_str}.md"
     report_file.write_text(report, encoding="utf-8")
 
@@ -502,14 +727,16 @@ def main():
     data_file.write_text(json.dumps({
         "cron_health": cron_health,
         "skills_audit": skills_audit,
-        "git_activity": git_activity
+        "git_activity": git_activity,
+        "execution_results": execution_results,
+        "gep_signals": signal_data
     }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"\n✅ 报告已保存: {report_file}")
     print(f"✅ 计划已保存: {plan_file}")
     print(f"✅ 数据已保存: {data_file}")
     print(f"\n{'='*60}")
-    print("✅ 分析完成")
+    print(f"✅ 分析完成 — 自动执行: {execution_results['executed']} 项")
     print(f"{'='*60}")
 
     return {
@@ -517,6 +744,8 @@ def main():
         "skills_audit": skills_audit,
         "git_activity": git_activity,
         "plan": plan,
+        "execution_results": execution_results,
+        "gep_signals": signal_data,
         "report_file": str(report_file)
     }
 
