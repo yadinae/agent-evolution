@@ -27,12 +27,14 @@ HISTORY_FILE = WORKSPACE / "cron" / "evolution-history.json"
 EVOLUTION_DIR = WORKSPACE / "evolution"
 REPORT_FILE = EVOLUTION_DIR / f"evolution-report-{datetime.now().strftime('%Y-%m-%d')}.md"
 
-# 导入新增模块 — 用包路径而非 sys.path 操纵
+# 导入内部模块
 from src.wal_protocol import WALProtocol
 from src.working_buffer import WorkingBuffer
 from src.feishu_reporter import FeishuReporter
 from src.task_analyzer import TaskPerformanceAnalyzer
 from src.skill_analyzer import SkillQualityAnalyzer
+from src.session_analyzer import SessionAnalyzer
+from src.tracker import LearningTracker
 
 # 确保输出目录存在
 EVOLUTION_DIR.mkdir(parents=True, exist_ok=True)
@@ -59,6 +61,13 @@ class AgentEvolutionAnalyzer:
         # 阶段 3：闭环进化
         self.feedback_log = EVOLUTION_DIR / "feedback-log.json"
         self.verification_results = {}
+
+        # 新增：会话分析器（基于 state.db 的精确工具性能分析）
+        self.session_analyzer = SessionAnalyzer()
+        self.session_data = {}
+
+        # 新增：学习曲线追踪器
+        self.tracker = LearningTracker()
         
     def load_data(self):
         """加载历史数据"""
@@ -658,7 +667,403 @@ class AgentEvolutionAnalyzer:
             except Exception as e:
                 print(f"  ⚠️ 加载反馈历史失败：{e}")
         return None
-    
+
+    # ────────────────────────────────────────────────────────────
+    # 新增：修复策略加载与查询
+    # ────────────────────────────────────────────────────────────
+
+    def _load_fix_strategies(self) -> dict:
+        """
+        加载 references/fix_strategies.md 并解析为结构化策略字典。
+        供 analyze_session_tools() 在生成改进建议时使用。
+        """
+        strategies_path = Path(__file__).parent / "references" / "fix_strategies.md"
+        default_strategies = self._default_fix_strategies()
+
+        if not strategies_path.exists():
+            return default_strategies
+
+        try:
+            content = strategies_path.read_text(encoding="utf-8")
+            # 解析 markdown 中的策略表 → dict
+            # 按 ### 章节解析
+            current_section = None
+            current_subsection = None
+            parsing_table = False
+            table_headers = []
+            table_rows = []
+
+            for line in content.split("\n"):
+                stripped = line.strip()
+
+                # 检测一级章节
+                if stripped.startswith("### "):
+                    current_subsection = stripped.replace("### ", "").strip()
+                    parsing_table = False
+                    continue
+
+                # 检测策略条目（以数字序号开头）
+                if stripped.startswith("### 1.") or stripped.startswith("### 2.") \
+                   or stripped.startswith("### 3.") or stripped.startswith("### 4."):
+                    current_section = current_subsection
+                    parsing_table = False
+                    continue
+
+                # 检测 markdown 表格
+                if stripped.startswith("|") and stripped.endswith("|"):
+                    if "---" in stripped:
+                        parsing_table = True
+                        continue
+                    if parsing_table:
+                        cells = [c.strip() for c in stripped.split("|")[1:-1]]
+                        if not table_headers:
+                            table_headers = cells
+                        else:
+                            table_rows.append(dict(zip(table_headers, cells)))
+                else:
+                    if parsing_table and table_rows:
+                        # 完成一个表格解析，存入结果
+                        if current_subsection:
+                            section_key = current_subsection.lower().replace(" ", "_").replace("(", "").replace(")", "")
+                            if section_key not in default_strategies:
+                                default_strategies[section_key] = {}
+                            for row in table_rows:
+                                name_cell = row.get("字段", row.get("detect", row.get("工具", row.get("能力缺口", ""))))
+                                if name_cell:
+                                    key = name_cell.replace("**", "").strip()
+                                    for col, val in row.items():
+                                        col_key = col.lower().replace("**", "").strip()
+                                        if col_key not in ("字段", "detect", "工具", "能力缺口"):
+                                            if key not in default_strategies[section_key]:
+                                                default_strategies[section_key][key] = {}
+                                            default_strategies[section_key][key][col_key] = val.replace("**", "").strip()
+                            table_rows = []
+                            table_headers = []
+                        parsing_table = False
+
+            # 验证解析结果：检查是否提取到实际数据
+            error_keys = [k for k in ["timeout", "path_not_found", "permission", "command_not_found"]
+                          if k in default_strategies]
+            gap_keys = [k for k in default_strategies.get("skill_gap", {})]
+            if not error_keys and not gap_keys:
+                # MD 文件存在但解析没有提取到任何已知错误策略 → 格式变了
+                print("  ⚠️ fix_strategies.md 存在但未能提取修复策略，"
+                      "使用内置默认策略。检查文件格式。")
+
+            return default_strategies
+
+        except Exception as e:
+            print(f"  ⚠️ 加载 fix_strategies.md 失败: {e}")
+            return default_strategies
+
+    def _default_fix_strategies(self) -> dict:
+        """内置默认修复策略（当 fix_strategies.md 不可用时）。"""
+        return {
+            # 按错误类别（和 session_analyzer.py 的 ERROR_SIGNATURES 对应）
+            "timeout": {
+                "category": "timeout",
+                "suggestion": "添加指数退避重试逻辑（最多 3 次，base_delay=2s）",
+                "template": "with_retry(fn, max_retries=3, base_delay=2)",
+                "priority": "P1",
+            },
+            "path_not_found": {
+                "category": "path_not_found",
+                "suggestion": "文件操作前先 os.path.exists() 检查，不存在的路径自动搜索替代",
+                "template": "if not os.path.exists(path): try alternatives",
+                "priority": "P1",
+            },
+            "permission": {
+                "category": "permission",
+                "suggestion": "添加权限检查，权限不足时给出 chmod/chown 提示",
+                "template": "os.access(path, os.R_OK) → chmod +r",
+                "priority": "P1",
+            },
+            "command_not_found": {
+                "category": "command_not_found",
+                "suggestion": "命令执行前先用 which/command -v 检查存在性",
+                "template": "if not command -v $CMD: suggest install",
+                "priority": "P1",
+            },
+            "connection": {
+                "category": "connection",
+                "suggestion": "连接前先检查端口开放，失败时提示服务状态",
+                "template": "socket.connect_ex() → check port → connect",
+                "priority": "P1",
+            },
+            "rate_limit": {
+                "category": "rate_limit",
+                "suggestion": "添加 RateLimiter，控制请求频率为 20 次/分钟",
+                "template": "RateLimiter(max_per_minute=20).wait()",
+                "priority": "P1",
+            },
+            "not_found": {
+                "category": "not_found",
+                "suggestion": "404 时验证 URL 格式，尝试搜索替代资源",
+                "template": "validate URL → search fallback",
+                "priority": "P2",
+            },
+            "server_error": {
+                "category": "server_error",
+                "suggestion": "5xx 时重试 3 次 + 降级到缓存数据",
+                "template": "retry(3) → cache fallback",
+                "priority": "P2",
+            },
+            "auth": {
+                "category": "auth",
+                "suggestion": "401 时自动刷新 token 后重试，提供环境变量配置说明",
+                "template": "401 → refresh_token() → retry",
+                "priority": "P0",
+            },
+            "syntax_error": {
+                "category": "syntax_error",
+                "suggestion": "代码生成后用 ast.parse 做语法检查再执行",
+                "template": "validate_python(code) before exec",
+                "priority": "P2",
+            },
+            "missing_parameter": {
+                "category": "missing_parameter",
+                "suggestion": "调用前校验必填参数，缺失时尝试从上下文推断",
+                "template": "validate_required(params, fields)",
+                "priority": "P2",
+            },
+            "runtime_error": {
+                "category": "runtime_error",
+                "suggestion": "添加全局异常捕获 + 错误上下文日志",
+                "template": "safe_execute(fn, context_str)",
+                "priority": "P2",
+            },
+            # 用户纠正
+            "correction": {
+                "default": {
+                    "suggestion": "执行可能有副作用的操作前加 clarify 确认，文件操作先 dry-run",
+                    "template": "clarify before destructive ops",
+                }
+            },
+            # 重试循环（按工具）
+            "retry_loop": {
+                "_default": {
+                    "suggestion": "添加 with_retry() 封装和冷却间隔，防止快速重试循环",
+                    "template": "with_retry(fn) + 0.5s cooldown",
+                },
+                "terminal": {
+                    "suggestion": "terminal 重试循环：添加 --max-attempts 3 和 1s 冷却间隔",
+                    "template": "terminal(cmd, timeout=30) with retry limit",
+                },
+                "read_file": {
+                    "suggestion": "read_file 重试循环：改用 search_files 批量读取替代逐文件试错",
+                    "template": "search_files(pattern) → batch read",
+                },
+                "web_extract": {
+                    "suggestion": "web_extract 重试循环：加指数退避，不行就降级到 web_search",
+                    "template": "with_retry(web_extract) → web_search fallback",
+                },
+            },
+            # 技能缺口（按能力名 — 保持和 session_analyzer.SKILL_GAP_KEYWORDS 一致）
+            "skill_gap": {
+                "网络请求": {
+                    "suggestion": "创建网络请求技能，封装 requests/curl 常用模式",
+                    "template": "基础 HTTP fetch 技能 (devops)",
+                },
+                "CSV": {
+                    "suggestion": "创建 CSV/Excel 处理技能，封装 pandas 读取和转换",
+                    "template": "CSV 解析 + pandas 处理 (data-science)",
+                },
+                "部署": {
+                    "suggestion": "创建部署流水线技能，封装常用部署命令",
+                    "template": "部署流程自动化 (devops)",
+                },
+                "文件批量": {
+                    "suggestion": "创建文件批量处理技能，封装 glob + shutil 模式",
+                    "template": "批量文件操作 (devops)",
+                },
+                "数据分析": {
+                    "suggestion": "创建数据分析技能，封装 pandas/numpy 统计流程",
+                    "template": "数据清洗 + 统计 (data-science)",
+                },
+                "定时任务": {
+                    "suggestion": "创建定时任务管理技能，封装 cron 配置和管理",
+                    "template": "cron 任务编排 (devops)",
+                },
+                "数据库": {
+                    "suggestion": "创建数据库查询技能，封装 SQLite/Postgres 常用操作",
+                    "template": "SQL 查询封装 (devops)",
+                },
+                "图片处理": {
+                    "suggestion": "创建图片处理技能，封装 Pillow 常用操作",
+                    "template": "Pillow 基础操作 (creative)",
+                },
+            },
+        }
+
+    def _lookup_fix(self, error_category: str, strategies: dict) -> dict:
+        """查询错误类别对应的修复策略。"""
+        if not error_category:
+            return {
+                "category": "unknown",
+                "suggestion": "分析失败原因后决定修复方案",
+                "template": "",
+                "priority": "P3",
+            }
+
+        # 直接匹配
+        for key in [error_category, error_category.lower()]:
+            if key in strategies:
+                s = strategies[key]
+                return {
+                    "category": s.get("category", key),
+                    "suggestion": s.get("suggestion", f"针对「{key}」添加错误处理"),
+                    "template": s.get("template", ""),
+                    "priority": s.get("priority", "P2"),
+                }
+
+        # 模糊匹配：error_category 包含策略 key
+        for key, s in strategies.items():
+            if isinstance(s, dict) and s.get("category") \
+               and (key in error_category or error_category in key):
+                return {
+                    "category": s.get("category", key),
+                    "suggestion": s.get("suggestion", f"针对「{key}」添加错误处理"),
+                    "template": s.get("template", ""),
+                    "priority": s.get("priority", "P2"),
+                }
+
+        return {
+            "category": "unknown",
+            "suggestion": f"分析错误「{error_category}」根因后决定修复方案",
+            "template": "",
+            "priority": "P3",
+        }
+
+    # ────────────────────────────────────────────────────────────
+    # 新增：会话级工具性能分析（基于 state.db）
+    # ────────────────────────────────────────────────────────────
+
+    def analyze_session_tools(self, days: int = 14):
+        """
+        基于 state.db 的精确工具性能分析。
+        从 Hermes 会话数据库读取工具调用数据，统计每工具的
+        成功率、错误类型、用户纠正、重试循环、技能缺口。
+        """
+        print("\n📊 分析会话工具性能（state.db）...")
+        # 加载修复策略对照表
+        fix_strategies = self._load_fix_strategies()
+        try:
+            data = self.session_analyzer.analyze(days=days)
+            self.session_data = data
+
+            if data["sessions_analyzed"] == 0:
+                print("  ℹ️ 未找到会话数据")
+                return
+
+            print(f"  ✅ 分析 {data['sessions_analyzed']} 个会话, "
+                  f"{data['total_tool_calls']} 次工具调用")
+            print(f"  总体成功率: {data['overall_success_rate']}%")
+
+            # 提取弱工具（成功率低于 90% 且有错误的工具）
+            weak_tools = [
+                t for t in data.get("per_tool_stats", [])
+                if t["errors"] > 0 and t["success_rate"] < 90
+            ]
+            for tool in weak_tools:
+                # 查表获取修复策略
+                fix = self._lookup_fix(tool["top_error"], fix_strategies)
+                self.improvements.append({
+                    "type": "session_tool_performance",
+                    "tool": tool["tool"],
+                    "total_calls": tool["total"],
+                    "errors": tool["errors"],
+                    "success_rate": tool["success_rate"],
+                    "top_error": tool["top_error"],
+                    "severity": "high" if tool["success_rate"] < 70 else "medium",
+                    "suggestion": fix["suggestion"],
+                    "fix_category": fix["category"],
+                    "fix_template": fix["template"],
+                    "priority_by_error": fix["priority"],
+                })
+                print(f"  ⚠️ [{tool['tool']}] "
+                      f"{tool['success_rate']}% ({tool['errors']}/{tool['total']})"
+                      f" → {tool['top_error']}")
+                if fix["category"] != "unknown":
+                    print(f"      → Fix: {fix['suggestion'][:80]}...")
+
+            # 用户纠正
+            corrections = data.get("user_corrections", 0)
+            if corrections > 0:
+                corr_fix = fix_strategies.get("correction", {}).get("default", {})
+                self.learnings.append({
+                    "type": "user_correction",
+                    "count": corrections,
+                    "samples": data.get("correction_samples", [])[:3],
+                    "priority": "P1",
+                    "content": f"检测到 {corrections} 次用户纠正",
+                    "fix_suggestion": corr_fix.get("suggestion",
+                        "添加操作前确认步骤，减少纠正次数"),
+                })
+                print(f"  👤 用户纠正: {corrections} 次 → {corr_fix.get('suggestion', '添加确认')[:60]}")
+
+            # 重试循环
+            retries = data.get("retry_loops", [])
+            if retries:
+                # 按工具聚合，保留 session_id 用于溯源
+                retry_by_tool = defaultdict(lambda: {"count": 0, "session_ids": []})
+                for r in retries:
+                    tool = r["tool"]
+                    retry_by_tool[tool]["count"] += 1
+                    sid = r.get("session_id", "?")
+                    if sid not in retry_by_tool[tool]["session_ids"]:
+                        retry_by_tool[tool]["session_ids"].append(sid)
+                top_retries = sorted(
+                    retry_by_tool.items(), key=lambda x: -x[1]["count"]
+                )[:5]
+                for tool, info in top_retries:
+                    count = info["count"]
+                    session_ids = info["session_ids"][:3]
+                    retry_fix = fix_strategies.get("retry_loop", {}).get(tool, {})
+                    suggestion = retry_fix.get(
+                        "suggestion",
+                        f"工具 {tool} 出现 {count} 次重试循环，"
+                        f"需检查为何反复失败，添加重试控制逻辑"
+                    )
+                    top_sessions = ", ".join(session_ids)
+                    self.improvements.append({
+                        "type": "session_retry_loop",
+                        "tool": tool,
+                        "retry_count": count,
+                        "session_ids": session_ids,
+                        "severity": "medium",
+                        "suggestion": f"{suggestion}（示例会话: {top_sessions}）",
+                        "fix_category": "retry_loop",
+                        "fix_template": fix_strategies.get("retry_loop", {})
+                            .get("_default", {}).get("template", ""),
+                    })
+                    print(f"  🔄 {tool}: {count} 次重试循环 → {suggestion[:70]}...")
+
+            # 技能缺口
+            gaps = data.get("skill_gaps", [])
+            if gaps:
+                gap_strategies = fix_strategies.get("skill_gap", {})
+                for gap in gaps:
+                    gap_fix = gap_strategies.get(gap["capability"], {})
+                    suggestion = gap_fix.get(
+                        "suggestion",
+                        f"用户频繁请求「{gap['capability']}」能力 "
+                        f"（{gap['requests']} 次），建议创建对应技能"
+                    )
+                    self.improvements.append({
+                        "type": "session_skill_gap",
+                        "capability": gap["capability"],
+                        "requests": gap["requests"],
+                        "severity": "low",
+                        "suggestion": suggestion,
+                        "fix_category": "skill_gap",
+                        "fix_template": gap_fix.get("template",
+                            f"创建 {gap['capability']} 技能"),
+                    })
+                    print(f"  🆕 技能缺口: {gap['capability']} ({gap['requests']} 次) → {suggestion[:60]}...")
+
+        except Exception as e:
+            print(f"  ❌ 会话分析失败: {e}")
+
     # ============================================
     # 阶段 4：主动进化
     # ============================================
@@ -1201,14 +1606,58 @@ category: devops
         
         report = f"""# Agent Evolution Report - 进化报告
 
-**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  
-**进化周期**: #{plan['cycle']}  
-**数据源**: MEMORY.md + HISTORY.md
+**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  \n
+**进化周期**: #{plan['cycle']}  \n
+**数据源**: MEMORY.md + HISTORY.md + state.db\n
 
 ---
 
 ## 📊 分析摘要
 
+"""
+        # 会话分析区块：仅在 session 数据有效时显示
+        if self.session_data.get("sessions_analyzed", 0) > 0:
+            report += f"""### 📈 会话工具性能分析（state.db）
+| 指标 | 数值 |
+|------|------|
+| 分析会话数 | {self.session_data.get('sessions_analyzed', 'N/A')} |
+| 工具调用总数 | {self.session_data.get('total_tool_calls', 'N/A')} |
+| 总体成功率 | {self.session_data.get('overall_success_rate', 'N/A')}% |
+| 用户纠正 | {self.session_data.get('user_corrections', 'N/A')} 次 |
+| 重试循环 | {len(self.session_data.get('retry_loops', []))} 个 |
+| 技能缺口 | {len(self.session_data.get('skill_gaps', []))} 个 |
+
+"""
+            # 添加弱工具表
+            weak_tools = [t for t in self.session_data.get("per_tool_stats", [])
+                          if t["errors"] > 0 and t["success_rate"] < 90]
+            if weak_tools:
+                report += "**弱工具排名：**\n\n"
+                report += "| 工具 | 成功率 | 失败数/总数 | 主要错误 |\n"
+                report += "|------|--------|-------------|----------|\n"
+                for t in weak_tools[:10]:
+                    report += f"| {t['tool']} | {t['success_rate']}% | {t['errors']}/{t['total']} | {t['top_error']} |\n"
+                report += "\n"
+
+            # 技能缺口表
+            gaps = self.session_data.get("skill_gaps", [])
+            if gaps:
+                report += "**技能缺口：**\n\n"
+                report += "| 能力 | 请求次数 |\n"
+                report += "|------|----------|\n"
+                for g in gaps:
+                    report += f"| {g['capability']} | {g['requests']} |\n"
+                report += "\n"
+
+        # ── 学习曲线趋势 ──
+        try:
+            trend_text = self.tracker.print_trend_summary()
+            if trend_text and "尚无" not in trend_text:
+                report += f"\n{trend_text}\n\n"
+        except Exception:
+            pass
+
+        report += f"""
 ### 改进机会 (Improvements)
 共发现 **{len(self.improvements)}** 个改进机会
 
@@ -1470,7 +1919,10 @@ category: devops
         
         # 6.6. 阶段 2：技能质量分析
         self.analyze_skill_quality()
-        
+
+        # 6.7. 新增：会话级工具性能分析（基于 state.db）
+        self.analyze_session_tools(days=14)
+
         # 7. 生成进化计划
         plan = self.generate_evolution_plan()
         
@@ -1545,7 +1997,26 @@ category: devops
             result = None
             has_anomaly = False
         
-        # 11. 清理 HEARTBEAT.md 历史记录（只保留最近 3 条）
+        # 11. 保存学习曲线快照
+        try:
+            print("\n📈 保存学习曲线快照...")
+            improvements_data = applied if applied else []
+            # 如果有改进项，构造一个改进列表给 tracker
+            if self.improvements:
+                improvements_data = [
+                    {"type": imp.get("type", ""), "target": imp.get("tool", imp.get("capability", "")),
+                     "action": "suggested"}
+                    for imp in self.improvements[:20]
+                ]
+            snapshot = self.tracker.save_snapshot(
+                session_data=self.session_data,
+                improvements=improvements_data,
+            )
+            print(f"  ✅ 快照已保存: {snapshot['date']} — {snapshot['overall_success_rate']}% 成功率")
+        except Exception as e:
+            print(f"  ⚠️ 保存学习曲线快照失败: {e}")
+
+        # 12. 清理 HEARTBEAT.md 历史记录（只保留最近 3 条）
         try:
             print("\n🧹 清理历史记录...")
             self._cleanup_heartbeat_history()
