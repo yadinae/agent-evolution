@@ -64,8 +64,14 @@ function runPython(scriptPath, args = []) {
 // --- Helper: read generated report file ---
 function readLatestOutput(suffix) {
   if (!fs.existsSync(OUTPUT_DIR)) return null;
+  // 支持带日期后缀的文件名（evolution-plan-2026-08-05.json → suffix '-plan.json'）
+  function matches(f) {
+    if (suffix === '-plan.json') return /-plan-\d{4}-\d{2}-\d{2}\.json$/.test(f) || f.endsWith('-plan.json');
+    if (suffix === '-data.json') return /-data-\d{4}-\d{2}-\d{2}\.json$/.test(f) || f.endsWith('-data.json');
+    return f.endsWith(suffix);
+  }
   const files = fs.readdirSync(OUTPUT_DIR)
-    .filter(f => f.endsWith(suffix) && !f.startsWith('fix_') && !f.startsWith('gep-'))
+    .filter(f => matches(f) && !f.startsWith('fix_') && !f.startsWith('gep-'))
     .sort()
     .reverse();
   if (files.length === 0) return null;
@@ -77,7 +83,7 @@ function readLatestOutput(suffix) {
 function readLatestPlan() {
   if (!fs.existsSync(OUTPUT_DIR)) return null;
   const files = fs.readdirSync(OUTPUT_DIR)
-    .filter(f => f.endsWith('-plan.json'))
+    .filter(f => /-plan-\d{4}-\d{2}-\d{2}\.json$/.test(f) || f.endsWith('-plan.json'))
     .sort()
     .reverse();
   if (files.length === 0) return null;

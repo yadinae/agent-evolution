@@ -7,6 +7,7 @@ Agent Evolution v2 每日分析 — 纯 Python 实现（含 AutoFixer）
 import os
 import json
 import re
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from collections import Counter, defaultdict
@@ -520,6 +521,45 @@ def emit_gep_signals(plan, execution_results):
 
 
 # ============================================================================
+# 6.5 GEP 修复引擎触发（消费信号，闭环进化）
+# ============================================================================
+
+def run_gep_fix(signal_data):
+    """
+    调用 GEP 引擎（src/evolve.js --fix repair-only）消费进化信号。
+
+    GEP 引擎带完整护栏（blast_radius 硬上限 / validation 安全校验 /
+    canary 金丝雀 / 约束检查），repair-only 策略仅做低风险修复。
+    """
+    gep_script = Path(os.path.expanduser("~/projects/agent-evolution")) / "src" / "evolve.js"
+    if not gep_script.exists():
+        print("  ⚠️ GEP 引擎不存在，跳过触发")
+        return {"triggered": False, "reason": "engine_missing"}
+    try:
+        r = subprocess.run(
+            ["node", str(gep_script), "--fix", "--strategy", "repair-only"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120,
+            cwd=str(gep_script.parent.parent),
+        )
+        out_text = r.stdout.decode("utf-8", errors="replace") if r.stdout else ""
+        err_text = r.stderr.decode("utf-8", errors="replace") if r.stderr else ""
+        result = {
+            "triggered": True,
+            "exit_code": r.returncode,
+            "output": (out_text or err_text).strip()[-500:],
+            "signals": signal_data.get("signals", []),
+        }
+        if r.returncode == 0:
+            print(f"  🧬 GEP 修复引擎已执行 (exit=0)")
+        else:
+            print(f"  ⚠️ GEP 修复引擎退出码 {r.returncode}: {(err_text or out_text)[:200]}")
+        return result
+    except Exception as e:
+        print(f"  ⚠️ GEP 触发异常: {e}")
+        return {"triggered": False, "reason": str(e)[:200]}
+
+
+# ============================================================================
 # 7. 报告生成
 # ============================================================================
 
@@ -712,6 +752,9 @@ def main(execute_fixes=True):
     signal_data = emit_gep_signals(plan, execution_results)
     print(f"  信号: {len(signal_data.get('signals', []))} 个")
 
+    # ★ 6.5 触发 GEP 修复引擎（消费信号，闭环进化）
+    gep_result = run_gep_fix(signal_data)
+
     # 7. 生成报告
     print("\n📄 生成报告...")
     report = generate_report(cron_health, skills_audit, git_activity, plan, execution_results)
@@ -729,7 +772,8 @@ def main(execute_fixes=True):
         "skills_audit": skills_audit,
         "git_activity": git_activity,
         "execution_results": execution_results,
-        "gep_signals": signal_data
+        "gep_signals": signal_data,
+        "gep_fix": gep_result
     }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"\n✅ 报告已保存: {report_file}")

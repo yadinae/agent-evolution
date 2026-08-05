@@ -233,6 +233,300 @@ const CRITICAL_PROTECTED_FILES = [
 // --- Validation command safety ---
 const VALIDATION_ALLOWED_PREFIXES = ['node ', 'npm ', 'npx '];
 
+// 恢复自 f385c32^（拆模块时误删，2026-08-05 修复）:
+function isValidationCommandAllowed(cmd) {
+  const c = String(cmd || '').trim();
+  if (!c) return false;
+  if (!VALIDATION_ALLOWED_PREFIXES.some(p => c.startsWith(p))) return false;
+  if (/`|\$\(/.test(c)) return false;
+  const stripped = c.replace(/"[^"]*"/g, '').replace(/'[^']*'/g, '');
+  if (/[;&|><]/.test(stripped)) return false;
+  return true;
+}
+
+function runValidations(gene, opts = {}) {
+  const repoRoot = opts.repoRoot || getRepoRoot();
+  const timeoutMs = Number.isFinite(Number(opts.timeoutMs)) ? Number(opts.timeoutMs) : 180000;
+  const validation = Array.isArray(gene && gene.validation) ? gene.validation : [];
+  const results = [];
+  const startedAt = Date.now();
+  for (const cmd of validation) {
+    const c = String(cmd || '').trim();
+    if (!c) continue;
+    if (!isValidationCommandAllowed(c)) {
+      results.push({ cmd: c, ok: false, out: '', err: 'BLOCKED: validation command rejected by safety check (allowed prefixes: node/npm/npx; shell operators prohibited)' });
+      return { ok: false, results, startedAt, finishedAt: Date.now() };
+    }
+    const r = tryRunCmd(c, { cwd: repoRoot, timeoutMs });
+    results.push({ cmd: c, ok: r.ok, out: String(r.out || ''), err: String(r.err || '') });
+    if (!r.ok) return { ok: false, results, startedAt, finishedAt: Date.now() };
+  }
+  return { ok: true, results, startedAt, finishedAt: Date.now() };
+}
+
+
+// ─── 恢复自 f385c32^（拆模块时误删的 GEP 核心函数，2026-08-05 修复）───
+function isConstraintCountedPath(relPath, policy) {
+  const rel = normalizeRelPath(relPath);
+  if (!rel) return false;
+  if (matchAnyExact(rel, policy.excludeExact)) return false;
+  if (matchAnyPrefix(rel, policy.excludePrefixes)) return false;
+  if (matchAnyRegex(rel, policy.excludeRegex)) return false;
+  if (matchAnyExact(rel, policy.includeExact)) return true;
+  if (matchAnyPrefix(rel, policy.includePrefixes)) return true;
+  const lower = rel.toLowerCase();
+  for (const ext of Array.isArray(policy.includeExtensions) ? policy.includeExtensions : []) {
+    const e = String(ext || '').toLowerCase();
+    if (!e) continue;
+    if (lower.endsWith(e)) return true;
+  }
+  return false;
+}
+
+function parseNumstatRows(text) {
+  const rows = [];
+  const lines = String(text || '').split('\n').map(l => l.trim()).filter(Boolean);
+  for (const line of lines) {
+    const parts = line.split('\t');
+    if (parts.length < 3) continue;
+    const a = Number(parts[0]);
+    const d = Number(parts[1]);
+    let rel = normalizeRelPath(parts.slice(2).join('\t'));
+    if (rel.includes('=>')) {
+      const right = rel.split('=>').pop();
+      rel = normalizeRelPath(String(right || '').replace(/[{}]/g, '').trim());
+    }
+    rows.push({
+      file: rel,
+      added: Number.isFinite(a) ? a : 0,
+      deleted: Number.isFinite(d) ? d : 0,
+    });
+  }
+  return rows;
+}
+
+function computeBlastRadius({ repoRoot, baselineUntracked }) {
+  const policy = readOpenclawConstraintPolicy();
+  let changedFiles = gitListChangedFiles({ repoRoot }).map(normalizeRelPath).filter(Boolean);
+  if (Array.isArray(baselineUntracked) && baselineUntracked.length > 0) {
+    const baselineSet = new Set(baselineUntracked.map(normalizeRelPath));
+    changedFiles = changedFiles.filter(f => !baselineSet.has(f));
+  }
+  const countedFiles = changedFiles.filter(f => isConstraintCountedPath(f, policy));
+  const ignoredFiles = changedFiles.filter(f => !isConstraintCountedPath(f, policy));
+  const filesCount = countedFiles.length;
+
+  const u = tryRunCmd('git diff --numstat', { cwd: repoRoot, timeoutMs: 60000 });
+  const c = tryRunCmd('git diff --cached --numstat', { cwd: repoRoot, timeoutMs: 60000 });
+  const unstagedRows = u.ok ? parseNumstatRows(u.out) : [];
+  const stagedRows = c.ok ? parseNumstatRows(c.out) : [];
+  let stagedUnstagedChurn = 0;
+  for (const row of [...unstagedRows, ...stagedRows]) {
+    if (!isConstraintCountedPath(row.file, policy)) continue;
+    stagedUnstagedChurn += row.added + row.deleted;
+  }
+
+  const untracked = tryRunCmd('git ls-files --others --exclude-standard', { cwd: repoRoot, timeoutMs: 60000 });
+  let untrackedLines = 0;
+  if (untracked.ok) {
+    const rels = String(untracked.out).split('\n').map(normalizeRelPath).filter(Boolean);
+    const baselineSet = new Set((Array.isArray(baselineUntracked) ? baselineUntracked : []).map(normalizeRelPath));
+    for (const rel of rels) {
+      if (baselineSet.has(rel)) continue;
+      if (!isConstraintCountedPath(rel, policy)) continue;
+      const abs = path.join(repoRoot, rel);
+      untrackedLines += countFileLines(abs);
+    }
+  }
+  const churn = stagedUnstagedChurn + untrackedLines;
+  return {
+    files: filesCount,
+    lines: churn,
+    changed_files: countedFiles,
+    ignored_files: ignoredFiles,
+    all_changed_files: changedFiles,
+  };
+}
+
+function checkConstraints({ gene, blast, blastRadiusEstimate, repoRoot }) {
+  const violations = [];
+  const warnings = [];
+  let blastSeverity = null;
+
+  if (!gene || gene.type !== 'Gene') return { ok: true, violations, warnings, blastSeverity };
+  const constraints = gene.constraints || {};
+  const maxFiles = Math.max(Number(constraints.max_files) || 0, 20);
+
+  // --- Blast radius severity classification ---
+  blastSeverity = classifyBlastSeverity({ blast, maxFiles });
+
+  // Hard cap breach is always a violation, regardless of gene config.
+  if (blastSeverity.severity === 'hard_cap_breach') {
+    violations.push(blastSeverity.message);
+    console.error(`[Solidify] ${blastSeverity.message}`);
+  } else if (blastSeverity.severity === 'critical_overrun') {
+    violations.push(blastSeverity.message);
+    // Log directory breakdown for diagnostics.
+    const breakdown = analyzeBlastRadiusBreakdown(blast.all_changed_files || blast.changed_files || []);
+    console.error(`[Solidify] ${blastSeverity.message}`);
+    console.error(`[Solidify] Top contributing directories: ${breakdown.map(function (d) { return d.dir + ' (' + d.files + ')'; }).join(', ')}`);
+  } else if (blastSeverity.severity === 'exceeded') {
+    violations.push(`max_files exceeded: ${blast.files} > ${maxFiles}`);
+  } else if (blastSeverity.severity === 'approaching_limit') {
+    warnings.push(blastSeverity.message);
+  }
+
+  // --- Estimate vs actual drift detection ---
+  const estimateComparison = compareBlastEstimate(blastRadiusEstimate, blast);
+  if (estimateComparison && estimateComparison.drifted) {
+    warnings.push(estimateComparison.message);
+    console.log(`[Solidify] WARNING: ${estimateComparison.message}`);
+  }
+
+  // --- Forbidden paths ---
+  const forbidden = Array.isArray(constraints.forbidden_paths) ? constraints.forbidden_paths : [];
+  for (const f of blast.all_changed_files || blast.changed_files || []) {
+    if (isForbiddenPath(f, forbidden)) violations.push(`forbidden_path touched: ${f}`);
+  }
+
+  // --- Critical protection: block modifications to critical paths ---
+  // By default, evolution CANNOT modify evolver, wrapper, or other core skills.
+  // This prevents the "evolver modifies itself and introduces bugs" problem.
+  // To opt in to self-modification (NOT recommended for production):
+  //   set EVOLVE_ALLOW_SELF_MODIFY=true in environment.
+  var allowSelfModify = String(process.env.EVOLVE_ALLOW_SELF_MODIFY || '').toLowerCase() === 'true';
+  for (const f of blast.all_changed_files || blast.changed_files || []) {
+    if (isCriticalProtectedPath(f)) {
+      var norm = normalizeRelPath(f);
+      if (allowSelfModify && norm.startsWith('skills/evolver/') && gene && gene.category === 'repair') {
+        // Self-modify opt-in: allow repair-only changes to evolver when explicitly enabled
+        warnings.push('self_modify_evolver_repair: ' + norm + ' (EVOLVE_ALLOW_SELF_MODIFY=true)');
+      } else {
+        violations.push('critical_path_modified: ' + norm);
+      }
+    }
+  }
+
+  // --- New skill directory completeness check ---
+  // Detect when an innovation cycle creates a skill directory with too few files.
+  // This catches the "empty directory" problem where AI creates skills/<name>/ but
+  // fails to write any code into it. A real skill needs at least index.js + SKILL.md.
+  if (repoRoot) {
+    var newSkillDirs = new Set();
+    var changedList = blast.all_changed_files || blast.changed_files || [];
+    for (var sci = 0; sci < changedList.length; sci++) {
+      var scNorm = normalizeRelPath(changedList[sci]);
+      var scMatch = scNorm.match(/^skills\/([^\/]+)\//);
+      if (scMatch && !isCriticalProtectedPath(scNorm)) {
+        newSkillDirs.add(scMatch[1]);
+      }
+    }
+    newSkillDirs.forEach(function (skillName) {
+      var skillDir = path.join(repoRoot, 'skills', skillName);
+      try {
+        var entries = fs.readdirSync(skillDir).filter(function (e) { return !e.startsWith('.'); });
+        if (entries.length < 2) {
+          warnings.push('incomplete_skill: skills/' + skillName + '/ has only ' + entries.length + ' file(s). New skills should have at least index.js + SKILL.md.');
+        }
+      } catch (e) { /* dir might not exist yet */ }
+    });
+  }
+
+  return { ok: violations.length === 0, violations, warnings, blastSeverity };
+}
+
+function runCanaryCheck(opts) {
+  const repoRoot = (opts && opts.repoRoot) ? opts.repoRoot : getRepoRoot();
+  const timeoutMs = (opts && Number.isFinite(Number(opts.timeoutMs))) ? Number(opts.timeoutMs) : 30000;
+  const canaryScript = path.join(repoRoot, 'src', 'canary.js');
+  if (!fs.existsSync(canaryScript)) {
+    return { ok: true, skipped: true, reason: 'canary.js not found' };
+  }
+  const r = tryRunCmd(`node "${canaryScript}"`, { cwd: repoRoot, timeoutMs });
+  return {
+    ok: r.ok,
+    skipped: false,
+    out: String(r.out || '').slice(0, 500),
+    err: String(r.err || '').slice(0, 500),
+  };
+}
+
+function buildEpigeneticMark(context, boost, reason) {
+  return {
+    context: String(context || '').slice(0, 100),
+    boost: Math.max(-0.5, Math.min(0.5, Number(boost) || 0)),
+    reason: String(reason || '').slice(0, 200),
+    created_at: new Date().toISOString(),
+  };
+}
+
+function applyEpigeneticMarks(gene, envFingerprint, outcomeStatus) {
+  if (!gene || gene.type !== 'Gene') return gene;
+
+  // Initialize epigenetic_marks array if not present
+  if (!Array.isArray(gene.epigenetic_marks)) {
+    gene.epigenetic_marks = [];
+  }
+
+  const platform = envFingerprint && envFingerprint.platform ? String(envFingerprint.platform) : '';
+  const arch = envFingerprint && envFingerprint.arch ? String(envFingerprint.arch) : '';
+  const nodeVersion = envFingerprint && envFingerprint.node_version ? String(envFingerprint.node_version) : '';
+  const envContext = [platform, arch, nodeVersion].filter(Boolean).join('/') || 'unknown';
+
+  // Check if a mark for this context already exists
+  const existingIdx = gene.epigenetic_marks.findIndex(
+    (m) => m && m.context === envContext
+  );
+
+  if (outcomeStatus === 'success') {
+    if (existingIdx >= 0) {
+      // Reinforce: increase boost (max 0.5)
+      const cur = gene.epigenetic_marks[existingIdx];
+      cur.boost = Math.min(0.5, (Number(cur.boost) || 0) + 0.05);
+      cur.reason = 'reinforced_by_success';
+      cur.created_at = new Date().toISOString();
+    } else {
+      // New positive mark
+      gene.epigenetic_marks.push(
+        buildEpigeneticMark(envContext, 0.1, 'success_in_environment')
+      );
+    }
+  } else if (outcomeStatus === 'failed') {
+    if (existingIdx >= 0) {
+      // Suppress: decrease boost
+      const cur = gene.epigenetic_marks[existingIdx];
+      cur.boost = Math.max(-0.5, (Number(cur.boost) || 0) - 0.1);
+      cur.reason = 'suppressed_by_failure';
+      cur.created_at = new Date().toISOString();
+    } else {
+      // New negative mark
+      gene.epigenetic_marks.push(
+        buildEpigeneticMark(envContext, -0.1, 'failure_in_environment')
+      );
+    }
+  }
+
+  // Decay old marks (keep max 10, remove marks older than 90 days)
+  const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+  gene.epigenetic_marks = gene.epigenetic_marks
+    .filter((m) => m && new Date(m.created_at).getTime() > cutoff)
+    .slice(-10);
+
+  return gene;
+}
+
+function getEpigeneticBoost(gene, envFingerprint) {
+  if (!gene || !Array.isArray(gene.epigenetic_marks)) return 0;
+  const platform = envFingerprint && envFingerprint.platform ? String(envFingerprint.platform) : '';
+  const arch = envFingerprint && envFingerprint.arch ? String(envFingerprint.arch) : '';
+  const nodeVersion = envFingerprint && envFingerprint.node_version ? String(envFingerprint.node_version) : '';
+  const envContext = [platform, arch, nodeVersion].filter(Boolean).join('/') || 'unknown';
+
+  const mark = gene.epigenetic_marks.find((m) => m && m.context === envContext);
+  return mark ? Number(mark.boost) || 0 : 0;
+}
+
+
 
 
 // --- Canary via Fork: verify index.js loads in an isolated child process ---
