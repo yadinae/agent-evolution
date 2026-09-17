@@ -158,46 +158,51 @@ class AgentEvolutionAnalyzer:
             
             # 检测连续失败
             if len(failure_dates) >= 2:
-                # 检查是否连续（日期间隔<=2 天）
-                failure_dates.sort(reverse=True)
+                # 先验证日期格式，丢弃无法解析的项（避免静默跳过导致误判"无连续失败"）
+                valid_dates = []
+                for d in failure_dates:
+                    try:
+                        datetime.strptime(d, "%Y-%m-%d")
+                        valid_dates.append(d)
+                    except ValueError:
+                        print(f"  ⚠️ 无法解析失败日期 {d!r}（{component}），已跳过")
+                if len(valid_dates) < 2:
+                    continue
+                valid_dates.sort(reverse=True)
                 consecutive_count = 1
                 max_consecutive = 1
                 
-                for i in range(1, len(failure_dates)):
-                    try:
-                        from datetime import datetime
-                        d1 = datetime.strptime(failure_dates[i-1], "%Y-%m-%d")
-                        d2 = datetime.strptime(failure_dates[i], "%Y-%m-%d")
-                        if (d1 - d2).days <= 2:
-                            consecutive_count += 1
-                            max_consecutive = max(max_consecutive, consecutive_count)
-                        else:
-                            consecutive_count = 1
-                    except:
-                        pass
+                for i in range(1, len(valid_dates)):
+                    d1 = datetime.strptime(valid_dates[i-1], "%Y-%m-%d")
+                    d2 = datetime.strptime(valid_dates[i], "%Y-%m-%d")
+                    if (d1 - d2).days <= 2:
+                        consecutive_count += 1
+                        max_consecutive = max(max_consecutive, consecutive_count)
+                    else:
+                        consecutive_count = 1
                 
                 if max_consecutive >= 2:
                     # 连续失败 2 天以上，标记为 P0 问题
                     self.improvements.append({
                         'type': 'consecutive_failure',
                         'component': component,
-                        'failure_dates': failure_dates[:5],
+                        'failure_dates': valid_dates[:5],
                         'consecutive_days': max_consecutive,
                         'priority': 'P0',
                         'severity': 'critical',
                         'suggestion': f'🚨 {component} 连续 {max_consecutive} 天失败，需立即修复！'
                     })
-                    print(f"  🚨 {component}: 连续 {max_consecutive} 天失败 - {failure_dates[:3]}")
+                    print(f"  🚨 {component}: 连续 {max_consecutive} 天失败 - {valid_dates[:3]}")
     
     def analyze_workflow_efficiency(self):
         """分析工作流效率"""
         print("\n⚡ 分析工作流效率...")
         
         workflow_patterns = {
-            '公众号文章': r'公众号 | 微信文章|wechat',
-            '新闻简报': r'新闻简报|newsletter|AI 新闻',
+            '公众号文章': r'公众号\s*文章|微信文章|wechat|gzh',
+            '新闻简报': r'新闻简报|newsletter|AI\s*新闻',
             '技能开发': r'技能|skill|创建.*技能',
-            '网站改进': r'studyai|网站|评审 | 改进',
+            '网站改进': r'studyai|网站|评审|改进',
             '备份任务': r'备份|backup',
             '模型切换': r'model.*switch|切换.*模型|fallback',
         }
@@ -223,11 +228,12 @@ class AgentEvolutionAnalyzer:
         """分析用户纠正"""
         print("\n📝 分析用户纠正...")
         
+        # 用词边界 \b 避免 'not' 误匹配 notification/note/cannot，'correct' 误匹配 correctness
         correction_patterns = [
-            (r'不对 | 错了|错误|not|wrong', '理解纠正'),
-            (r'应该是 | 应该是|should be|correct', '正确方式'),
-            (r'不要 | 禁止 | 必须 | 要求|must|require', '用户偏好'),
-            (r'优先 | 首选|prefer|priority', '优先级设置'),
+            (r'不对|错了|错误|\bnot\b|\bwrong\b', '理解纠正'),
+            (r'应该是|should be|\bcorrect\b', '正确方式'),
+            (r'不要|禁止|必须|要求|\bmust\b|\brequire\b', '用户偏好'),
+            (r'优先|首选|\bprefer\b|\bpriority\b', '优先级设置'),
         ]
         
         corrections = []
@@ -322,22 +328,30 @@ class AgentEvolutionAnalyzer:
         """分析 API 健康状态"""
         print("\n🏥 分析 API 健康状态...")
         
-        api_issues = {
-            'DashScope': self.history_content.count('401') + self.history_content.count('DashscopeException'),
-            'Firecrawl': self.history_content.count('Firecrawl') + self.history_content.count('firecrawl'),
-            '飞书 API': self.history_content.count('飞书') + self.history_content.count('feishu'),
-            'GitHub': self.history_content.count('GitHub') + self.history_content.count('github'),
+        # 用词边界匹配 HTTP 状态码，避免 '401' 误匹配 '端口4013'/'2401'/'401ms' 等无关子串
+        content = self.history_content
+        def count_word(pattern: str) -> int:
+            return len(re.findall(pattern, content, re.IGNORECASE))
+        
+        # (api 名称, 失败特征正则) — 只统计"明确的失败/错误信号"，而非任意提及
+        api_failure_signals = {
+            'DashScope': [r'\b401\b', r'\b403\b', r'DashscopeException', r'DashScope.*(失败|错误|异常|超时|error|failed)'],
+            'Firecrawl': [r'Firecrawl.*(失败|错误|异常|超时|error|failed|error)', r'\bfirecrawl\b.*(error|failed|timeout)'],
+            '飞书 API': [r'(飞书|feishu|lark).*(失败|错误|异常|超时|限流|error|failed|429|50[0-9])'],
+            'GitHub': [r'(GitHub|github).*(失败|错误|异常|超时|限流|error|failed|403|429)'],
         }
         
-        for api, issue_count in api_issues.items():
-            if issue_count > 10:
+        for api, patterns in api_failure_signals.items():
+            issue_count = sum(count_word(p) for p in patterns)
+            if issue_count > 0:
                 self.optimizations.append({
                     'type': 'api_reliability',
                     'api': api,
                     'issue_mentions': issue_count,
                     'suggestion': f'为 {api} 配置备用方案和自动降级'
                 })
-                print(f"  ⚠️ {api}: {issue_count} 次相关问题")
+                print(f"  ⚠️ {api}: {issue_count} 次失败信号")
+        print("  ✅ API 健康分析完成（仅统计失败信号，非任意提及）")
     
     def analyze_task_performance(self):
         """阶段 2：任务性能分析"""
@@ -603,6 +617,20 @@ class AgentEvolutionAnalyzer:
                 # 检查技能是否已创建或改进
                 return 'pending'  # 需要人工验证
             return 'pending'
+        
+        elif imp_type == 'consecutive_failure':
+            # 验证连续失败是否消除：检查该 component 在当前周期是否仍有连续失败
+            component = imp.get('component', '')
+            current_cf = [i for i in self.improvements
+                         if i.get('type') == 'consecutive_failure' and i.get('component') == component]
+            if not current_cf:
+                return 'effective'  # 本周期该组件已无连续失败
+            # 仍在连续失败 → 看是否比上次缓和
+            last_days = imp.get('consecutive_days', 0)
+            cur_days = current_cf[0].get('consecutive_days', 0)
+            if last_days > 0 and cur_days < last_days:
+                return 'partial'
+            return 'failed'
         
         return 'pending'
     
@@ -1437,7 +1465,6 @@ category: devops
         for skill_md in skills_dir.rglob("SKILL.md"):
             try:
                 mtime = skill_md.stat().st_mtime
-                from datetime import datetime
                 last_modified = datetime.fromtimestamp(mtime)
                 days_old = (datetime.now() - last_modified).days
                 
@@ -1551,20 +1578,39 @@ category: devops
         } for opt in plan.get('optimizations', []) if opt.get('priority') in ('P0', 'P1')]
     
     def _deduplicate_knowledge(self, knowledge: dict) -> dict:
-        """去重并限制知识库大小"""
+        """去重并限制知识库大小
+        
+        注意：
+        1) 用规范化 JSON 字符串（而非 hash()）作为去重键——hash() 在 CPython
+           下受 PYTHONHASHSEED 影响，跨进程随机化，不可用作持久去重标识。
+        2) 超出 max_items 时从“最旧”端丢弃（保留最新），而非 [-max_items:]
+           保留最新丢弃最旧造成知识遗忘——这里改为保留最新，丢弃最旧，
+           与“知识随时间演化、新的更有价值”一致，但 failure_lessons 例外：
+           历史教训是宝贵的长期知识，优先保留最旧的教训（它们更可能是
+           已被验证的根因），只在超限时丢弃最旧的。
+        """
         max_items = 50
-        
+
         for key in ['effective_patterns', 'failure_lessons', 'user_preferences', 'best_practices']:
-            if key in knowledge:
-                seen = set()
-                unique = []
-                for item in knowledge[key]:
-                    item_hash = hash(json.dumps(item, sort_keys=True, default=str))
-                    if item_hash not in seen:
-                        seen.add(item_hash)
-                        unique.append(item)
-                knowledge[key] = unique[-max_items:]
-        
+            if key not in knowledge:
+                continue
+            seen = set()
+            unique = []
+            for item in knowledge[key]:
+                # 规范化 JSON 串作为确定性去重键（跨进程稳定）
+                canon = json.dumps(item, sort_keys=True, default=str, ensure_ascii=False)
+                if canon not in seen:
+                    seen.add(canon)
+                    unique.append(item)
+            if len(unique) > max_items:
+                # failure_lessons 保留最旧（长期教训），其余保留最新
+                if key == 'failure_lessons':
+                    knowledge[key] = unique[:max_items]
+                else:
+                    knowledge[key] = unique[-max_items:]
+            else:
+                knowledge[key] = unique
+
         knowledge['last_updated'] = datetime.now().isoformat()
         return knowledge
     
@@ -1592,18 +1638,45 @@ category: devops
         """获取进化周期数（并写回状态）"""
         state_file = EVOLUTION_DIR / "evolution_state.json"
         cycle = 1
+        state = {}
         if state_file.exists():
-            with open(state_file, 'r') as f:
-                state = json.load(f)
-                cycle = state.get('cycle', 0) + 1
-        else:
-            state = {}
+            try:
+                with open(state_file, 'r', encoding='utf-8') as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    state = loaded
+                else:
+                    print(f"  ⚠️ evolution_state.json 不是对象，忽略并重置")
+            except (json.JSONDecodeError, OSError) as e:
+                # 文件损坏（如崩溃时截断成空/半写）→ 备份 + 重置，不崩溃
+                backup = state_file.with_name("evolution_state.json.corrupt")
+                try:
+                    shutil.copy2(state_file, backup)
+                    print(f"  ⚠️ evolution_state.json 损坏（{e}），已备份到 {backup.name}，重置 cycle=1")
+                except Exception:
+                    print(f"  ⚠️ evolution_state.json 损坏（{e}），无法备份，重置 cycle=1")
+                state = {}
         
-        # 写回状态（修复 cycle 始终为 1 的 bug）
+        cycle = int(state.get('cycle', 0)) + 1
         state['cycle'] = cycle
         state['last_run'] = datetime.now().isoformat()
-        with open(state_file, 'w') as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
+        
+        # 原子写：先写临时文件再 os.replace，避免截断-写入间崩溃留下空/半满文件
+        tmp_file = state_file.with_name(f".evolution_state.json.tmp-{os.getpid()}")
+        try:
+            with open(tmp_file, 'w', encoding='utf-8') as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_file, state_file)
+        except Exception as e:
+            # 写失败时尽力清理临时文件，保留旧状态文件不变
+            try:
+                if tmp_file.exists():
+                    tmp_file.unlink()
+            except OSError:
+                pass
+            raise OSError(f"写 evolution_state.json 失败: {e}") from e
         
         return cycle
     
@@ -1930,7 +2003,10 @@ category: devops
         # 6.7. 新增：会话级工具性能分析（基于 state.db）
         self.analyze_session_tools(days=14)
 
-        # 7. 生成进化计划
+        # 7. 分配改进优先级（必须在写盘之前，确保 evolution-plan-*.json 含 priority 字段）
+        self._assign_priorities(self.improvements)
+        
+        # 7.1 生成进化计划
         plan = self.generate_evolution_plan()
         
         # 7.5. 趋势对比分析（与上一周期对比）
@@ -1938,9 +2014,6 @@ category: devops
         
         # 7.6. 自动应用安全改进
         applied = self._apply_safe_improvements(plan)
-        
-        # 阶段 3：优先级排序
-        plan['improvements'] = self._assign_priorities(plan.get('improvements', []))
         
         # 阶段 3：验证改进效果
         verification = self._verify_improvements(plan)
