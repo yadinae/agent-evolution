@@ -14,6 +14,7 @@ import os
 import sys
 import json
 import re
+import shutil
 import argparse
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -567,7 +568,7 @@ class AgentEvolutionAnalyzer:
             for skill_path in skills:
                 if '/' in skill_path:
                     cat, name = skill_path.split('/', 1)
-                    skill_md = Path(f"/home/admin/.hermes/skills/{cat}/{name}/SKILL.md")
+                    skill_md = HERMES_HOME / "skills" / cat / name / "SKILL.md"
                     if skill_md.exists():
                         return 'effective'
             return 'failed'
@@ -1491,8 +1492,14 @@ category: devops
             try:
                 with open(knowledge_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
-            except Exception:
-                pass
+            except (json.JSONDecodeError, OSError) as e:
+                # 文件存在但已损坏 → 备份损坏副本 + 报警，绝不让调用方静默返回空知识库后覆盖原文件
+                backup = knowledge_file.with_name("knowledge-base.json.corrupt")
+                try:
+                    shutil.copy2(knowledge_file, backup)
+                    print(f"  ⚠️ 知识库文件损坏（{e}），已备份到 {backup.name}，本次使用空默认值。")
+                except Exception:
+                    print(f"  ⚠️ 知识库文件损坏（{e}），备份失败，本次使用空默认值。")
         
         return {
             'effective_patterns': [],
