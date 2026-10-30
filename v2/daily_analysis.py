@@ -190,6 +190,8 @@ def analyze_skills():
         "without_documentation": len(without_doc),
         "missing_docs": [{"name": s["name"]} for s in without_doc[:10]],
         "empty_skills": [{"name": s["name"]} for s in empty_skills[:5]],
+        "outdated_count": len(outdated_skills),  # 真实超期总数（截断前）
+        "aged_count": len([s for s in outdated_skills if s["days_since_update"] > 90]),  # >90天降级告警
         "outdated_skills": [
             {"name": s["name"], "last_modified": s["last_modified"], "days": s["days_since_update"]}
             for s in sorted(outdated_skills, key=lambda x: -x["days_since_update"])[:10]
@@ -239,7 +241,11 @@ def analyze_git_activity():
             except Exception as e:
                 results[name] = {"has_git": True, "note": f"检查失败: {str(e)}"}
         else:
-            results[name] = {"has_git": False, "note": "无 .git 目录"}
+            # hermes 本体通过二进制/容器分发，非 git 管理；版本追踪请参考 hermes-scan.py / 发布日志
+            if name == "hermes":
+                results[name] = {"has_git": False, "note": "无 .git 目录（Hermes 本体非 git 管理，版本追踪请参考 hermes-scan.py / 发布日志）"}
+            else:
+                results[name] = {"has_git": False, "note": "无 .git 目录"}
 
     return results
 
@@ -309,15 +315,30 @@ def generate_plan(cron_health, skills_audit, git_activity):
             })
 
         outdated = skills_audit.get("outdated_skills", [])
+        outdated_total = skills_audit.get("outdated_count", len(outdated))
         if outdated:
             actions.append({
                 "id": "skill-outdated",
                 "type": "skill_updates",
                 "priority": "P3",
-                "title": f"{len(outdated)} 个技能超过 30 天未更新",
+                "title": f"{outdated_total} 个技能超过 30 天未更新（报告显示最旧 {len(outdated)} 个）",
                 "description": f"最旧: {outdated[0]['name']} ({outdated[0]['days']} 天)",
                 "execution": "discuss",
                 "steps": ["评估是否需要更新"]
+            })
+
+        # 降级告警：>90 天的技能升级为 P2，提示批量归档或重写
+        aged = [s for s in outdated if s["days"] > 90]
+        aged_total = skills_audit.get("aged_count", len(aged))
+        if aged_total:
+            actions.append({
+                "id": "skill-aged",
+                "type": "skill_updates",
+                "priority": "P2",
+                "title": f"{aged_total} 个技能超过 90 天未更新（降级告警）",
+                "description": f"最旧: {aged[0]['name']} ({aged[0]['days']} 天)" if aged else "",
+                "execution": "review",
+                "steps": ["确认是否仍在使用", "归档或重写（参考 system-cleanup 技能的 archive-then-delete 模式）"]
             })
 
     # Git 活动相关
@@ -603,7 +624,8 @@ def generate_report(cron_health, skills_audit, git_activity, plan, execution_res
         report += f"| 有文档 | {skills_audit['with_documentation']} |\n"
         report += f"| 缺文档 | {skills_audit['without_documentation']} |\n"
         report += f"| 内容过短 | {len(skills_audit.get('empty_skills', []))} |\n"
-        report += f"| 超过 30 天未更新 | {len(skills_audit.get('outdated_skills', []))} |\n"
+        report += f"| 超过 30 天未更新 | {skills_audit.get('outdated_count', len(skills_audit.get('outdated_skills', [])))} |\n"
+        report += f"| 超过 90 天（降级告警） | {skills_audit.get('aged_count', 0)} |\n"
 
         missing = skills_audit.get("missing_docs", [])
         if missing:
